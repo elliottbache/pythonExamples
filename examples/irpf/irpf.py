@@ -47,7 +47,11 @@ def find_total_price(amount,amounts,prices):
     return total_price, amounts, prices
 
 def create_sales(dates,ttypes,amounts,prices,fees,totals):
-    
+    """
+    Create sales list for writing to file
+    Inputs: dates = dates of each sale, ttypes = transaction types, amounts = amount of each transaction, prices = price of each transaction, fees = fee of each transaction, totals = total of each transaction.
+    Outputs: sales = list of each sale including sale date, sale amount, sale price, buy price, buy amount in euros , sale amount in euros, gains
+    """
     sales = []
     dummy_amounts = amounts[:]
     dummy_prices = prices[:]
@@ -65,17 +69,32 @@ def create_sales(dates,ttypes,amounts,prices,fees,totals):
     return sales
 
 def create_coinbase_dataframe(fn):
+    """
+    Create dataframe from Coinbase file.
+    Inputs: fn = filename for Coinbase transactions
+    Outputs: dfCoinbase = dataframe with Coinbase transactions
+    """
     dfCoinbase = pd.read_csv(fn)
     dfCoinbase['Timestamp'] = dfCoinbase['Timestamp'].str.replace("T",' ')
     dfCoinbase['Timestamp'] = dfCoinbase['Timestamp'].str.replace("Z",' ')
+
     return dfCoinbase
 
 def create_bitfinex_dataframe(fn):
+    """
+    Create dataframe from Bitfinex file.
+    Inputs: fn = filename for Bitfinex transactions
+    Outputs: dfBitfinex = dataframe with Bitfinex transactions
+    """
     dfBitfinex = pd.read_csv(fn)
     return dfBitfinex
 
 def convert_ticker(ticker):
-   
+    """
+    Convert 3-letter tickers to 4-letter tickers and vice versa
+    Inputs: ticker = ticker either in 3- or 4-letter format
+    Outputs: complementary ticker
+    """
     if ticker == 'UST':
         return  'USDT'
     elif ticker == 'USDT':
@@ -127,10 +146,11 @@ def convert_ticker(ticker):
     else:
         return ticker
 
-
 def read_prices(crypto):
     """
     Takes crypto name in uppercase letters and returns price data.
+    Inputs: crypto = crypto name
+    Outputs: df = dataframe with price data in euros for each day of that crypto
     """   
     # define file name
     if crypto != "USD" and crypto != "JPY" and crypto != "GBP":
@@ -162,6 +182,8 @@ def read_prices(crypto):
 def find_price(df_prices,date):
     """
     Takes prices data and date to be checked, and returns price in euros of that crypto on that day.  If that day is not available, it returns the next day that is available.
+    Inputs: df_prices = dataframe with prices of crypto for each day, date = date that we wish to analyze
+    Outputs: price at that date for the specified price dataframe.  
     """   
     # find row of date that is the same or the closest date after
     d = df_prices.loc[df_prices["Timestamp"] >= date]
@@ -177,9 +199,8 @@ if __name__ == "__main__":
     if os.path.exists("transacciones.csv"):
         os.remove("transacciones.csv")
 
-
     # load transactions from Coinbase
-    dfCoinbase = create_coinbase_dataframe('Coinbase-5d7ff44788780709b55083cd-TransactionsHistoryReport-2021-05-09-16_14_47.csv')
+    dfCoinbase = create_coinbase_dataframe('CoinbaseTransactions-2021-05-09-16_14_47.csv')
 
     # load transactions from Bitfinex
     df = create_bitfinex_dataframe("ebache_trades_FROM_Sun-Dec-31-2017_TO_Wed-Dec-30-2020_ON_2021-05-09T12-29-15.226Z.csv")
@@ -350,10 +371,6 @@ if __name__ == "__main__":
 
                     totals.append(-amounts[-1]*prices[-1])
 
-        """
-        for idx, i in enumerate(dates):
-            print(dates[idx],amounts[idx],prices[idx],fees[idx],totals[idx])
-        """
         print("sum totals for ",crypto," = ",sum(totals))
 
         # open output file

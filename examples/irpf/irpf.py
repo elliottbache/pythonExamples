@@ -203,7 +203,7 @@ if __name__ == "__main__":
     dfCoinbase = create_coinbase_dataframe('CoinbaseTransactions-2021-05-09-16_14_47.csv')
 
     # load transactions from Bitfinex
-    df = create_bitfinex_dataframe("ebache_trades_FROM_Sun-Dec-31-2017_TO_Wed-Dec-30-2020_ON_2021-05-09T12-29-15.226Z.csv")
+    df = create_bitfinex_dataframe("Bitfinexrades_FROM_Sun-Dec-31-2017_TO_Wed-Dec-30-2020_ON_2021-05-09T12-29-15.226Z.csv")
     df = df.rename(columns={"DATE": "Timestamp"})
     df['Timestamp'] = pd.to_datetime(df['Timestamp'], format='%y-%m-%d %H:%M:%S').dt.strftime('%Y-%m-%d %H:%M:%S')
 

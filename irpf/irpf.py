@@ -1,411 +1,421 @@
-import sys
-import pandas as pd
-from datetime import datetime
-import time
-import csv
-import os
+# global variables
+##################
+year = 2023
+file_name = str(year) + '/cryptos - Tx.csv'
+old_coins = ['USD','ETH','USDC','USDT','BNB','SOL','BUSD','TOK','VLX','Deeznuts','METIS','LEAFTY','B20','SPI','PAINT','XED','DDIM','RLY','Minifootball','KISHU','Highrise','ERN','GLMR','LOOKS','YUZU','BTC','SOL','EUR','OVR','XYM','BLOK','EWT','ENJ','KKT','GMS','IOT','DPR','STUD','Cryptoshack','Highrise creature','Osiris cosmic kids','ChubbyKaiju','Bridge over troubled water','POLP','KSM','CRO']
 
-def find_total_price(amount,amounts,prices):
-    """
-    Given the amount of the sale, this returns the agglomerate buy price and returns this price plus the modified vectors having the sale amount removed from them.
-    Inputs: amount = sell amount, amounts = all transaction amounts for this crypto, prices = prices for the crypto on transaction day in euros.
-    Outputs: total_price = agglomerate price for buy amount corresponding to "amount", amounts = modified list of all transaction amounts for this crypto removing the sell amounts and used up buy amounts, prices  = modified list of all transaction prices for this crypto removing the sell prices and used up buy prices
-    """
-    total_amount, total_price, previous_amount = 0, 0, 0
-    idx = 0
-    sales = []
-    amount = abs(amount)
-    
-    # loop until sell amount has been reached by summing up buy amounts.
-    while total_amount < amount and len(amounts) > 0:
-        # remove sells
-        if amounts[0] <= 0:
-            amounts.pop(0)
-            prices.pop(0)
-            continue 
-        # add buy to agglomeration
-        if total_amount + amounts[0] <= amount:
-            total_amount += amounts[0]
-            total_price += amounts[0]*prices[0]
-            amounts.pop(0)
-            prices.pop(0)
-            previous_amount = total_amount # traces the previous total amount
-        # add part of buy to agglomeration so that sell amount is equal to buy amount
+# functions
+###########
+def read_csv(file_name):
+
+    import csv
+
+    data = list(csv.reader(open(file_name)))
+
+    return data
+
+def clean_data(data):
+
+    # remove header
+    data = data[1:]
+
+    # remove active management line
+    i = 0
+    while data[i][0] != 'active management':
+        i = i + 1
+    del data[i]
+
+    return data
+
+def remove_end_dates(data):
+
+    from datetime import datetime
+
+    # removes all data after end date
+    end = datetime(year, 12, 31)
+
+    iend = len(data) - 1
+    while datetime.strptime(data[iend][0], '%d-%m-%Y') > end:
+        iend = iend - 1
+    data = data[:iend+1]
+
+    return data
+
+def remove_begin_dates(data):
+
+    from datetime import datetime
+
+    begin = datetime(year, 1, 1)
+
+    ibegin = 0
+    while datetime.strptime(data[ibegin][0], '%d-%m-%Y') < begin:
+        ibegin = ibegin + 1
+    data = data[ibegin:]
+
+    return data
+
+def create_sales(data):
+
+    from datetime import datetime
+
+    min_prices, buys, sales, fees, balances = {}, {}, {}, {}, {}
+    for idx, row in enumerate(data):
+
+        # define variables for this row
+        ticker = row[2]
+        amount = float(row[3])
+
+        # if fee is incorrectly listed as a positive amount, change to negative
+        if ticker[:3] == 'fee' and amount > 0:
+            amount = -amount
+
+        is_price, price = set_price(ticker,amount,min_prices,row)
+        wallet = row[8]
+        chain = row[9]
+
+        # skip internal transfer rows
+        if '-' in wallet or '-' in chain:
+            # check that we don't have a transfer with prices.  A transfer with prices directly preceded by a transfer w/o prices would be the corresponding transfer fees & would be valid
+            if (row[4] or row[5]) and idx > 0 and data[idx-1][8] != wallet:
+                print("We shouldn't have a transfer with sell prices.", row)
+                exit()
+            continue
+
+        # update min prices in case we don't have a buy price, we use the min price of all time for that token
+        if is_price:
+            min_prices = update_min_prices(ticker,price,min_prices)
+
+        # update balances
+        if ticker[:3] == 'fee':
+            bticker = ticker[3:]
         else:
-            total_amount = amount
-            total_price += (total_amount - previous_amount)*prices[0]
-            amounts[0] -= (total_amount - previous_amount)
+            bticker = ticker
+        buy_price, buys, balances = update_balances(idx,bticker,price,amount,min_prices,balances,buys,row)
 
-    # calculate price of agglomerated buy
-    if total_amount > 0:
-        total_price /= total_amount
-    else:
-        print("Error: must have forgotten to add a deposit to the input files. total_price = ", total_price, "total_amount = ", total_amount)
-        sys.exit()
-        total_price = 1
-        
-    return total_price, amounts, prices
+        # if we have transferred to someone else, then no need to look at sales
+        if 'Sent' in row[10]:
+            continue
 
-def create_sales(dates,ttypes,amounts,prices,fees,totals):
-    """
-    Create sales list for writing to file
-    Inputs: dates = dates of each sale, ttypes = transaction types, amounts = amount of each transaction, prices = price of each transaction, fees = fee of each transaction, totals = total of each transaction.
-    Outputs: sales = list of each sale including sale date, sale amount, sale price, buy price, buy amount in euros , sale amount in euros, gains
-    """
-    sales = []
-    dummy_amounts = amounts[:]
-    dummy_prices = prices[:]
-    for idx, amount in enumerate(amounts):
-        if ttypes[idx] == 'Venta' and amount < 0:  # if it is a sell
-            remaining_amounts = dummy_amounts[idx:]
-            remaining_prices = dummy_prices[idx:]
-            dummy_amounts = dummy_amounts[:idx]
-            dummy_prices = dummy_prices[:idx]
-            total_price, dummy_amounts, dummy_prices = find_total_price(amount,dummy_amounts,dummy_prices)   
-            dummy_amounts = dummy_amounts + remaining_amounts
-            dummy_prices = dummy_prices + remaining_prices
-            sales.append([ dates[idx], amount, total_price, prices[idx], -amount*total_price, totals[idx], totals[idx] + amount*total_price])
+        # only look at rows that are sales and are from the current year
+        begin = datetime(year, 1, 1)
+        end = datetime(year, 12, 31)
+        if amount < 0 and datetime.strptime(row[0], '%d-%m-%Y') >= begin and datetime.strptime(row[0], '%d-%m-%Y') <= end:
+
+            if not is_price:
+                price = buy_price
+
+            if ticker[:3] == 'fee':
+                # add fee to list of fees
+                sales = add_sale(idx,bticker,price,amount,balances,min_prices,row,sales)
+                fees = add_fee(ticker,price,amount,balances,min_prices,row,fees)
+            else:
+                # add sale to list of sales
+                sales = add_sale(idx,ticker,price,amount,balances,min_prices,row,sales)
+
+
+    # if we have a sale at a loss and there are purchases within two months, then we don't compute until they are sold
+    sales = reduce_losses(balances,buys,sales)
+
+    # remove indices from sales
+    sales_write = {}
+    for key in sales:
+        if key not in sales_write:
+            sales_write[key] = []
+        for sale in sales[key]:
+            sales_write[key].append(sale[1:])
+
+    # write csv file with gains and fees
+    write_output_file(sales_write,fees)
 
     return sales
 
-def create_coinbase_dataframe(fn):
-    """
-    Create dataframe from Coinbase file.
-    Inputs: fn = filename for Coinbase transactions
-    Outputs: dfCoinbase = dataframe with Coinbase transactions
-    """
-    dfCoinbase = pd.read_csv(fn)
-    dfCoinbase['Timestamp'] = dfCoinbase['Timestamp'].str.replace("T",' ')
-    dfCoinbase['Timestamp'] = dfCoinbase['Timestamp'].str.replace("Z",' ')
+def reduce_losses(balances,buys,sales):
 
-    return dfCoinbase
+    from datetime import datetime
+    from dateutil.relativedelta import relativedelta
 
-def create_bitfinex_dataframe(fn):
-    """
-    Create dataframe from Bitfinex file.
-    Inputs: fn = filename for Bitfinex transactions
-    Outputs: dfBitfinex = dataframe with Bitfinex transactions
-    """
-    dfBitfinex = pd.read_csv(fn)
-    return dfBitfinex
+    # loop through tickers
+    original_sales = dict(sales)
+    for key in balances:
 
-def convert_ticker(ticker):
-    """
-    Convert 3-letter tickers to 4-letter tickers and vice versa
-    Inputs: ticker = ticker either in 3- or 4-letter format
-    Outputs: complementary ticker
-    """
-    if ticker == 'UST':
-        return  'USDT'
-    elif ticker == 'USDT':
-        return 'UST'
-    elif ticker == 'VSY':
-        return 'VSYS'
-    elif ticker == 'VSYS':
-        return 'VSY'
-    elif ticker == 'AMP':
-        return 'AMPL'
-    elif ticker == 'AMPL':
-        return 'AMP'
-    elif ticker == 'QTM':
-        return 'QTUM'
-    elif ticker == 'QTUM':
-        return 'QTM'
-    elif ticker == 'DAT':
-        return 'DATA'
-    elif ticker == 'DATA':
-        return 'DAT'
-    elif ticker == 'GNT':
-        return 'GNTO'
-    elif ticker == 'GNTO':
-        return 'GNT'
-    elif ticker == 'IOT':
-        return 'MIOTA'
-    elif ticker == 'MIOTA':
-        return 'IOT'
-    elif ticker == 'ALG':
-        return 'ALGO'
-    elif ticker == 'ALGO':
-        return 'ALG'
-    elif ticker == 'DSH':
-        return 'DASH'
-    elif ticker == 'DASH':
-        return 'DSH'
-    elif ticker == 'XCH':
-        return 'XCHF'
-    elif ticker == 'XCHF':
-        return 'XCH'
-    elif ticker == 'QSH':
-        return 'QASH'
-    elif ticker == 'QASH':
-        return 'QSH'
-    elif ticker == 'MNA':
-        return 'MANA'
-    elif ticker == 'MANA':
-        return 'MNA'
-    else:
-        return ticker
+        balances_key = dict(balances[key])
 
-def read_prices(crypto):
-    """
-    Takes crypto name in uppercase letters and returns price data.
-    Inputs: crypto = crypto name
-    Outputs: df = dataframe with price data in euros for each day of that crypto
-    """   
-    # define file name
-    if crypto != "USD" and crypto != "JPY" and crypto != "GBP":
-        fn = crypto.lower() + "-eur-max.csv"
-    else:
-        if crypto == "USD":
-            fn = "EUR_USD_HistoricalData.csv"
-        elif crypto == "JPY":
-            fn = "EUR_JPY_HistoricalData.csv"
-        elif crypto == "GBP":
-            fn = "EUR_GBP_HistoricalData.csv"
-
-    # read dataframe
-    df = pd.read_csv(fn)
-   
-    # clean up dataframe and sort
-    if crypto != "USD" and crypto != "JPY" and crypto != "GBP":
-        df = df.rename(columns={"snapped_at": "Timestamp"})
-    else:
-        df = df.rename(columns={"Date": "Timestamp"})
-        df = df.rename(columns={"Price": "price"})
-        df['price'] = 1.0/df['price']
-
-    df.Timestamp=pd.to_datetime(df.Timestamp).dt.strftime('%Y-%m-%d')
-    df.sort_values(by=['Timestamp'], inplace=True)
-
-    return df
-
-def find_price(df_prices,date):
-    """
-    Takes prices data and date to be checked, and returns price in euros of that crypto on that day.  If that day is not available, it returns the next day that is available.
-    Inputs: df_prices = dataframe with prices of crypto for each day, date = date that we wish to analyze
-    Outputs: price at that date for the specified price dataframe.  
-    """   
-    # find row of date that is the same or the closest date after
-    d = df_prices.loc[df_prices["Timestamp"] >= date]
-
-    return d['price'].iloc[0]
-
-if __name__ == "__main__":
-
-    start_date = "2018-01-01"
-    end_date = "2020-12-31"
-
-    # remove output file from previous runs
-    if os.path.exists("transacciones.csv"):
-        os.remove("transacciones.csv")
-
-    # load transactions from Coinbase
-    dfCoinbase = create_coinbase_dataframe('CoinbaseTransactions-2021-05-09-16_14_47.csv')
-
-    # load transactions from Bitfinex
-    df = create_bitfinex_dataframe("Bitfinexrades_FROM_Sun-Dec-31-2017_TO_Wed-Dec-30-2020_ON_2021-05-09T12-29-15.226Z.csv")
-    df = df.rename(columns={"DATE": "Timestamp"})
-    df['Timestamp'] = pd.to_datetime(df['Timestamp'], format='%y-%m-%d %H:%M:%S').dt.strftime('%Y-%m-%d %H:%M:%S')
-
-    # sort by order ID
-    df.sort_values(by=['#'], inplace=True)
-
-    # add Coinbase transactions to Bitfinex dataframe
-    df = pd.concat([ df, dfCoinbase] ,ignore_index=True)
-
-    # load transactions from Binance
-    # None for 2020!!!
-
-    # load transactions from Bitmax
-    # None for 2020!!!
-
-    # load transactions from Bybit
-    # None for 2020!!!
-
-    # load transactions from Metamask
-    # None for 2020!!!
-
-    # sort and clean up dataframe
-    df.sort_values(by=['Timestamp'], inplace=True)
-    df.drop(['#', 'FEE PERC','ORDER ID'], axis=1)
-    df = df[df['Timestamp'].between(start_date, end_date)]
-
-    df.Timestamp=pd.to_datetime(df.Timestamp).dt.strftime('%Y-%m-%d')
-
-    # create list of all currencies in 3-letter format
-    cryptos = list(df.Asset.dropna().unique())
-    for idx, crypto in enumerate(cryptos):
-        cryptos[idx] = convert_ticker(crypto)
-    pairs = df.PAIR.dropna().unique()
-    for pair in pairs:
-        if pair[:3] not in cryptos:
-            cryptos.append(pair[:3])
-        if pair[4:] not in cryptos:
-            cryptos.append(pair[4:])
-
-    # create list of all 2nd currencies in pairs (needed to store these cryptos prices continually)
-    stable_cryptos = {}
-    for pair in pairs:
-        if pair[4:] != 'EUR' and pair[4:] not in stable_cryptos:
-            stable_cryptos[pair[4:]] = read_prices(convert_ticker(pair[4:]))
-
-    # loop through each currency
-    total_gains, total_fees = 0, 0
-    for crypto in cryptos:
-
-        if crypto == 'EUR':
+        # if no remaining balances then no problem!
+        if not balances_key or len(balances_key['idx']) == 0:
             continue
 
-        unstable_cryptos = {}
+        if key in sales:
 
-        print("crypto = ",crypto)
-        
-        # read daily prices for this crypto if not already in stable_cryptos
-        if crypto not in stable_cryptos and crypto != 'EUR':
-            print("reading prices for ",crypto)
-            df_crypto = read_prices(convert_ticker(crypto))
+            sales_key = list(original_sales[key])
 
-        dates, ttypes, amounts, prices, fees, totals = [], [], [], [], [], []
-        # loop through transaction list
-        for index, row in df.iterrows():
+            # if no sales then no problem!
+            if len(sales_key) == 0:
+                continue
+        else:
+            continue
 
-            
-            if (row.notnull()['PAIR'] and crypto in row['PAIR']) or (row.notnull()['Asset'] and row['Asset'] == convert_ticker(crypto)) or (row.notnull()['Notes'] and convert_ticker(crypto) in row['Notes']):
+        buys_key = list(buys[key])
 
-                dates.append(row['Timestamp'].encode("utf-8"))
+        # if we have no buys then continue
+        if not balances_key or not buys_key or len(buys_key) == 0:
+            continue
 
-                # Coinbase transactions
-                if row.notnull()['Asset']:
-                    transaction_type = row['Transaction Type']
+        # take sum of remaining_balance
+        total_remaining_balance = sum(balances_key['amounts'])
 
-                    # create lists that hold transactions that affect gains.  Receiving money is not necessary since it does not require any transaction fees
-                    if transaction_type == 'Buy':
-                        ttypes.append('Compra')
-                        amounts.append(float(row['Quantity Transacted']))
-                        prices.append(float(row['EUR Spot Price at Transaction']))
-                        fees.append(-float(row['EUR Fees']))
-                        totals.append(-float(row['EUR Subtotal']))
-                    if transaction_type == 'Sell':
-                        ttypes.append('Venta')
-                        print("Error, sell in Coinbase is not yet implemented")
-                        sys.exit()
-                    if transaction_type == 'Send':
-                        ttypes.append('Envio')
-                        amounts.append(-float(row['Quantity Transacted']))
-                        prices.append(float(row['EUR Spot Price at Transaction']))
-                        if row.notnull()['EUR Fees']:
-                            fees.append(-float(row['EUR Fees']))
-                        else:
-                            fees.append(0)
-                        totals.append(0)
-                    if transaction_type == 'Receive':
-                        ttypes.append('Recepcion')
-                        amounts.append(float(row['Quantity Transacted']))
-                        prices.append(float(row['EUR Spot Price at Transaction']))
-                        fees.append(0)
-                        totals.append(0)
-                    if transaction_type == 'Convert':
-                        text = row['Notes'].split(' ')
-                        i = text.index(crypto)
-                        if i == 2:
-                            ttypes.append('Venta')
-                            amounts.append(-float(row['Quantity Transacted']))
-                            prices.append(float(row['EUR Spot Price at Transaction']))
-                            fees.append(-float(row['EUR Fees']))
-                            totals.append(float(row['EUR Total (inclusive of fees)']))
-                        elif i == 5:
-                            ttypes.append('Compra')
-                            amounts.append(float(text[i-1]))
-                            prices.append(float(row['EUR Subtotal']/amounts[-1])) # the cost of crypto1 after fees / quantity of crypto2
-                            fees.append(0) # the fees are applied to crypto1
-                            totals.append(-float(row['EUR Subtotal'])) # same as the cost of crypto1
-                        else:
-                            print("Converted text is faulty")
-                            sys.exit()
-                
-                # Bitfinex transactions
-                if row.notnull()['PAIR']:
-                    pair = row['PAIR'] 
-                    if crypto == pair[:3]:
-                        amounts.append(float(row['AMOUNT']))
-                        if amounts[-1] > 0:
-                            ttypes.append('Compra')
-                        else:
-                            ttypes.append('Venta')
-                        if pair[4:] == 'EUR':
-                            prices.append(float(row['PRICE']))
-                        elif pair[:3] == 'EUR':
-                            prices.append(1)
-                        else:
-                            prices.append(float(row['PRICE'])*find_price(stable_cryptos[pair[4:]],dates[-1]))
-                    else:
-                        amounts.append(-float(row['AMOUNT'])*float(row['PRICE']))
-                        if amounts[-1] > 0:
-                            ttypes.append('Compra')
-                        else:
-                            ttypes.append('Venta')
-                        if pair[4:] == 'EUR':
-                            prices.append(1)
-                        elif pair[:3] == 'EUR':
-                            prices.append(float(row['PRICE']))
-                        else:
-                            prices.append(find_price(stable_cryptos[pair[4:]],dates[-1]))
-                    if row['FEE CURRENCY'] != "EUR":
-                        if row['FEE CURRENCY'] not in stable_cryptos:
-                            if crypto != row['FEE CURRENCY']:
-                                if row['FEE CURRENCY'] not in unstable_cryptos:
-                                    print("reading prices for ",row['FEE CURRENCY'])
-                                    unstable_cryptos[row['FEE CURRENCY']] = read_prices(convert_ticker(row['FEE CURRENCY']))
-                                df_price = unstable_cryptos[row['FEE CURRENCY']]
-                            else:
-                                df_price = df_crypto
-                        else:
-                            df_price = stable_cryptos[row['FEE CURRENCY']]
-                        fees.append(float(row['FEE'])*find_price(df_price,dates[-1]))
-                    else:
-                        fees.append(float(row['FEE']))
+        # go backwards through buys while we get to the buy before the first one in balances 
+        ifirst = balances_key['idx'][0]
+        idx = len(buys_key) - 1
+        while idx > 0 and buys_key[idx][0] >= ifirst:
+            idx = idx - 1
 
-                    # only apply fees once to Buy
-                    if ttypes[-1] == 'Venta':
-                        fees[-1] = 0
+        # go forwards through last_sales
+        for isale, sale in enumerate(sales_key):
 
-                    totals.append(-amounts[-1]*prices[-1])
+            # if no remaining balances then no problem!
+            if not balances_key or len(balances_key['idx']) == 0:
+                break
 
-        print("sum totals for ",crypto," = ",sum(totals))
+            # only look at sales after the buy previous to the first remaining balance
+            if sale[0] < idx:
+                continue
 
-        # open output file
-        with open('transacciones.csv', 'a') as f:
-            writer = csv.writer(f)
+            # if isale is gain, continue
+            if sale[6] > 0:
+                continue
 
-            # print all transactions for this crypto
-            writer.writerow(['Todas_las_transacciones_con_'+crypto])
-            writer.writerow(["Fecha_de_transaccion", "Tipo_de_transaccion", "Cantidad", "Precio", "Comisiones_en_euros"])
-            for idx, i in enumerate(dates):
-                writer.writerow([ dates[idx],ttypes[idx],abs(amounts[idx]),prices[idx],abs(fees[idx])])
-                total_fees += abs(fees[idx])
+            # we will subtract from first balance, then continue until the sale amount is satisfied while the date is less than 2 months before
+            amount = abs(sale[3])
+            current_buy, total_buy = 0, 0
+            date = datetime.strptime(balances_key['dates'][0], '%d-%m-%Y')
+            while total_buy < amount and date < datetime.strptime(sale[1], '%d-%m-%Y') + relativedelta(months=+2) and len(balances_key['amounts']) > 0:
 
-            # print sales for this crypto
-            sales = create_sales(dates,ttypes,amounts,prices,fees,totals)
-            writer.writerow("")
-            writer.writerow(['Todas_las_ventas_y_sus_beneficios_'+crypto])
-            writer.writerow(["Fecha_de_venta", "Cantidad_de_venta", "Precio_de_compra", "Precio_de_venta", "Cantidad_de_compra_en_euros", "Cantidad_de_venta_en_euros", "Beneficios"])
-            gains = 0
-            for idx, i in enumerate(sales):
-                writer.writerow(sales[idx])
-                gains += sales[idx][6]
-            
-            print("sum gains for ",crypto," = ",gains)
+                if balances_key['idx'][0] < sale[0]:
+                    del balances_key['amounts'][0], balances_key['prices'][0], balances_key['idx'][0], balances_key['dates'][0]
+                    if len(balances_key['amounts']):
+                        date = datetime.strptime(balances_key['dates'][0], '%d-%m-%Y')
+                    continue 
 
-            writer.writerow("")
-            writer.writerow("")
+                if total_buy + balances_key['amounts'][0] <= amount:
+                    print('balances_key  = ',balances_key)
+                    current_buy = balances_key['amounts'][0]
+                    total_buy = total_buy + current_buy
+                    del balances_key['amounts'][0], balances_key['prices'][0], balances_key['idx'][0], balances_key['dates'][0]
+                    if len(balances_key['amounts']):
+                        date = datetime.strptime(balances_key['dates'][0], '%d-%m-%Y')
 
-        total_gains += gains
-        print("sum total gains = ",total_gains)
+                else:
+                    print('balances_key  = ',balances_key)
+                    current_buy = amount - total_buy
+                    total_buy = amount
+                    balances_key['amounts'][0] = balances_key['amounts'][0] - current_buy
 
-    with open('transacciones.csv', 'a') as f:
+                # subtract amount from isale
+                print('REDUCING SALE!!!!', key )
+                print('before', sales[key][isale] )
+                sales[key][isale][3] = sales[key][isale][3] - current_buy
+                sales[key][isale][6] = -sales[key][isale][3]*(sales[key][isale][4] - sales[key][isale][5])
+                print('after', sales[key][isale] )
+
+    return sales
+
+def write_output_file(sales,fees):
+
+    import csv
+
+    outfile = str(year) + '/txCriptos' + str(year) + '.csv'
+    with open(outfile, 'w', newline='') as f:
         writer = csv.writer(f)
+        writer.writerows([['Ventas'],['Fecha','Token','Cantidad','Precio de compra','Precio de venta','Ganancias']])
 
-        # print all transactions for this crypto
-        writer.writerow(["total_beneficios", total_gains])
-        writer.writerow("")
-        writer.writerow(["total_comisiones", total_fees])
+    total_gains = 0
+    for key in sales:
+        for i in sales[key]:
+            total_gains = total_gains + i[5]
+
+        with open(outfile, 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerows(sales[key])
+#            writer.writerows([[],['Ganancias totales',col_totals[5]]])
+
+    with open(outfile, 'a', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerows([[],['Ganancias totales',total_gains]])
+        writer.writerows([[],[],['Comisiones'],['Fecha','Token','Cantidad','Precio','Comisiones']])
+
+    total_fees = 0
+    for key in fees:
+        for i in fees[key]:
+            total_fees = total_fees + i[4]
+        with open(outfile, 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerows(fees[key])
+
+    with open(outfile, 'a', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerows([[],['Comisiones totales',total_fees]])
+
+    return 0
+
+def add_fee(ticker,price,amount,balances,min_prices,row,fees):
+
+    if row[5]:
+        sell_price = float(row[5])
+    else:
+        if row[4]:
+            sell_price = float(row[4])*float(row[1])
+        else:
+            print("Why is there no sale price?",row)
+            exit()
+
+    # add new ticker to fees
+    if ticker[3:] not in fees:
+        fees[ticker[3:]] = []
+
+    fees[ticker[3:]].append([row[0],ticker[3:],-amount,sell_price,-amount*(sell_price)])    
+    
+    return fees
+
+def add_sale(idx,ticker,price,amount,balances,min_prices,row,sales):
+
+    if row[5]:
+        sell_price = float(row[5])
+    else:
+        if row[4]:
+            sell_price = float(row[4])*float(row[1])
+        else:
+            print("Why is there no sale price?",row)
+            exit()
+
+    # add new ticker to sales
+    if ticker not in sales:
+        sales[ticker] = []
+
+    # don't declare stuff that is very small
+    if abs(amount*(price - sell_price)) > 1e-6:
+        sales[ticker].append([idx,row[0],ticker,-amount,price,sell_price,amount*(price - sell_price)])    
+
+    return sales
+
+def update_balances(idx,ticker,price,amount,min_prices,balances,buys,row):
+    
+    # if positive, add to end of list.
+    if amount > 0:
+        date = row[0]
+        balances = increase_balances(ticker,idx,date,price,amount,balances)
+        if ticker not in buys:
+            buys[ticker] = []
+        buys[ticker].append([idx,amount])
+    
+    # else subtract from first element. 
+        # when first element is 0, remove and continue with next
+        # if no more elements, continue to next row and set price as min overall price for that ticker
+        # sum(price*amount)/total amount
+    if amount < 0:
+        price, balances = reduce_balances(ticker,amount,min_prices,balances,row)
+
+    return price, buys, balances
+
+def increase_balances(ticker,idx,date,price,amount,balances):
+    # add to ticker's dictionary key
+    if ticker not in balances:
+        balances[ticker] = {}
+        balances[ticker]['idx'] = []
+        balances[ticker]['dates'] = []
+        balances[ticker]['prices'] = []
+        balances[ticker]['amounts'] = []
+
+    # if positive, add to end of list.
+    if  amount > 0:
+        balances[ticker]['idx'].append(idx)
+        balances[ticker]['dates'].append(date)
+        balances[ticker]['prices'].append(price)
+        balances[ticker]['amounts'].append(amount)
+
+    return balances
+
+def reduce_balances(ticker,amount,min_prices,balances,row):
+    # keep looping while there is still amount to be subtracted from first elements and while there are still elements
+    sum_price = 0 # this is a sum of the prices times the amounts
+    remaining_amount = amount # the remaining amount to be subtracted
+
+    # error catching for 0 amounts
+    if amount == 0:
+        print("Must change the amount for this row.",row)
+        exit()
+
+    # if no balance is available for this ticker
+    if not balances or ticker not in balances or len(balances[ticker]['amounts']) == 0:
+        if ticker in min_prices:
+            sum_price = min_prices[ticker]
+        if ((ticker[:3] != 'fee' and ticker not in old_coins) or (ticker[:3] == 'fee' and ticker[3:] not in old_coins)) and abs(float(row[3])*float(row[5])) > 0.01:
+            print("No balance is available for this row, but we are reducing balance by ",abs(float(row[3])*float(row[5]))," euros",row)
+        return sum_price, balances
+
+    # error catching for larger sell amounts than currently available.  The lowest price is used for the missing amounts
+    if abs(amount) > sum(balances[ticker]['amounts']):
+        min_price = min(balances[ticker]['prices'])
+#        min_price = min_prices[ticker]
+        idx = balances[ticker]['prices'].index(min_price)
+        balances[ticker]['amounts'][idx] = balances[ticker]['amounts'][idx] + abs(amount) - sum(balances[ticker]['amounts'])
+        if ((ticker[:3] != 'fee' and ticker not in old_coins) or (ticker[:3] == 'fee' and ticker[3:] not in old_coins)) and abs(max(balances[ticker]['prices'])*(abs(amount) - sum(balances[ticker]['amounts']))) > 0.01:
+            print("Sell amount is larger than current balance by ",max(balances[ticker]['prices'])*(abs(amount) - sum(balances[ticker]['amounts']))," euros at max price ",max(balances[ticker]['prices']),row)
+
+    while remaining_amount < 0 and balances[ticker] and len(balances[ticker]['prices']) > 0:
+        # if the specified amount is less than the first element in list
+        if abs(remaining_amount) < balances[ticker]['amounts'][0]:
+            balances[ticker]['amounts'][0] = balances[ticker]['amounts'][0] + remaining_amount
+            sum_price = sum_price - remaining_amount*balances[ticker]['prices'][0]
+            remaining_amount = 0
+        else:
+            remaining_amount = remaining_amount + balances[ticker]['amounts'][0]
+            sum_price = sum_price + balances[ticker]['amounts'][0]*balances[ticker]['prices'][0]
+            del balances[ticker]['amounts'][0], balances[ticker]['prices'][0], balances[ticker]['dates'][0], balances[ticker]['idx'][0]
+
+    return sum_price/-amount, balances
+
+def set_price(ticker,amount,min_prices,row):
+
+    # set buy price depending on conditions
+    try:
+        price = float(row[7])
+        is_price = True
+    except:
+        is_price = False
+        if min_prices and ticker in min_prices:
+            price = max(0,min_prices[ticker])
+        else:
+            price = ''
+        if amount > 0 and '-' not in row[8] and '-' not in row[9]:
+            print('This data is a purchase but with no buy price in euros. Fix this!!!')
+            print(row)
+            exit()
+
+    return is_price, price
+
+def update_min_prices(ticker,price,min_prices):
+    # update min price for that ticker
+    if price and price != -1:
+        if ticker not in min_prices:
+            min_prices[ticker] = price
+        else:
+            min_prices[ticker] = min(price,min_prices[ticker])
+
+    return min_prices
+
+# main code
+###########
+if __name__ == '__main__':
+
+    # read data from csv
+    data = read_csv(file_name)
+
+    # clean data
+    data = clean_data(data)
+
+    # loop through data and fill in price gaps
+#    up_to_data = remove_end_dates(data)
+    up_to_data = list(data)
+
+    sales = create_sales(up_to_data)
+    

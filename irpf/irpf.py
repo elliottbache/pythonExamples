@@ -133,24 +133,29 @@ def create_sales(data):
                     fees = add_fee(ticker,price,amount,balances,min_prices,row,fees)
 
     # for current year's sales, if we have a sale at a loss and there are purchases within two months, then we don't compute until they are sold
-    sales = reduce_losses(year,balances,buys,sales)
+    sales, reduced_losses = reduce_losses(year,balances,buys,sales)
 
     # for sales up to last year, if we have a sale at a loss and there are purchases within two months, then we don't compute until they are sold
-    last_years_sales = reduce_losses(year-1,last_years_balances,last_years_buys,last_years_sales)
+    last_years_sales, _ = reduce_losses(year-1,last_years_balances,last_years_buys,last_years_sales)
 
     # for sales up to this year, if we have a sale at a loss and there are purchases within two months, then we don't compute until they are sold
-    all_sales = reduce_losses(year,balances,buys,all_sales)
+    all_sales, _ = reduce_losses(year,balances,buys,all_sales)
 
     # carry over losses from previous years
     carry_over = carry_over_losses(last_years_sales, all_sales)
 
-    # remove indices from sales and carry_over
-    sales_write, carry_over_write = {}, {}
+    # remove indices from sales, reduced_losses, and carry_over
+    sales_write, reduced_losses_write, carry_over_write = {}, {}, {}
     for key in sales:
         if key not in sales_write:
             sales_write[key] = []
         for sale in sales[key]:
             sales_write[key].append(sale[1:])
+    for key in reduced_losses:
+        if key not in reduced_losses_write:
+            reduced_losses_write[key] = []
+        for reduced_loss in reduced_losses[key]:
+            reduced_losses_write[key].append(reduced_loss[1:])
     for key in carry_over:
         if key not in carry_over_write:
             carry_over_write[key] = []
@@ -158,7 +163,7 @@ def create_sales(data):
             carry_over_write[key].append(sale[1:])
 
     # write csv file with gains and fees
-    write_output_file(sales_write,fees,carry_over_write)
+    write_output_file(sales_write,fees,reduced_losses_write,carry_over_write)
 
     return sales
 
@@ -200,6 +205,7 @@ def reduce_losses(year,balances,buys,sales):
     end = datetime(year, 12, 31)
 
     # loop through tickers
+    reduced_losses = {}
     original_sales = dict(sales)
     for key in balances:
 
@@ -287,15 +293,33 @@ def reduce_losses(year,balances,buys,sales):
                 if debug:
                     print('REDUCING SALE!!!!', key )
                     print('before', sales[key][isale] )
+                    print('current buy = ',current_buy)
 
                 sales[key][isale][3] = sales[key][isale][3] - current_buy
                 sales[key][isale][6] = -sales[key][isale][3]*(sales[key][isale][4] - sales[key][isale][5])
+
                 if debug:
                     print('after', sales[key][isale] )
 
-    return sales
+                # define and initialize list for each sale in loss that is going to be reduced due to a still open purchase within 2 months
+                if key not in reduced_losses:
+                    reduced_losses[key] = []
+                if len(reduced_losses[key]) == 0 or reduced_losses[key][-1][0] != sale[0]:
+                    reduced_losses[key].append(list(sale))
+                    reduced_losses[key][-1][3] = 0
+                    reduced_losses[key][-1][6] = 0
 
-def write_output_file(sales,fees,carry_over):
+                # add the undeclared losses to reduced_losses
+                reduced_losses[key][-1][3] = reduced_losses[key][-1][3] + current_buy
+                reduced_losses[key][-1][6] = -reduced_losses[key][-1][3]*(sales[key][isale][4] - sales[key][isale][5])
+
+                if debug:
+#                    print('reduced_losses', reduced_losses[key][0] )
+                    print('reduced_losses', reduced_losses[key])
+
+    return sales, reduced_losses
+
+def write_output_file(sales,fees,reduced_losses,carry_over):
 
     import csv
 
@@ -357,6 +381,14 @@ def write_output_file(sales,fees,carry_over):
     with open(outfile, 'a', newline='') as f:
         writer = csv.writer(f)
         writer.writerows([[],['Perdidas compensadas totales',total_gains]])
+        writer.writerows([[],[],['Perdidas declaradas pero no a efectos liquidatorios'],['Fecha','Token','Cantidad','Precio de compra','Precio de venta','Ganancias']])
+
+    for key in reduced_losses:
+
+        with open(outfile, 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerows(reduced_losses[key])
+#            writer.writerows([[],['Ganancias totales',col_totals[5]]])
 
     return 0
 

@@ -1,0 +1,1 @@
+This program tracks the market caps of various narratives, tokens, and MC ranges, requesting data from Coingecko.

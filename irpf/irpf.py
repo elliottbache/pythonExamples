@@ -1,16 +1,24 @@
 # global variables
 ##################
-debug = True
+is_debug = True
 year = 2023
 beginning_of_time_year = 2023
 file_name = str(year) + '/cryptos - Tx.csv'
 #file_name = str(year) + '/cryptos.csv'
+
 old_coins = ['USD','ETH','USDC','USDT','BNB','SOL','BUSD','TOK','VLX','Deeznuts','METIS','LEAFTY','B20','SPI','PAINT','XED','DDIM','RLY','Minifootball','KISHU','Highrise','ERN','GLMR','LOOKS','YUZU','BTC','SOL','EUR','OVR','XYM','BLOK','EWT','ENJ','KKT','GMS','IOT','DPR','STUD','Cryptoshack','Highrise creature','Osiris cosmic kids','ChubbyKaiju','Bridge over troubled water','POLP','KSM','CRO']
+
+# CoinGecko query headers
+headers = {"accept": "application/json","x-cg-demo-api-key": ""}
 
 # functions
 ###########
 def read_csv(file_name):
-
+    """
+    This will read a csv file
+    Input: file_name = the file name including extension
+    Output: a list of lists containing all transaction data and headers
+    """
     import csv
 
     data = list(csv.reader(open(file_name)))
@@ -18,7 +26,12 @@ def read_csv(file_name):
     return data
 
 def clean_data(data):
-
+    """
+    Removes:
+    1.  The first line of the data that contains the column headers
+    2.  The line that contains the text 'active management'
+    Input: data = list of lists containing all transaction data
+    """
     # remove header
     data = data[1:]
 
@@ -30,34 +43,16 @@ def clean_data(data):
 
     return data
 
-def remove_end_dates(data):
-
-    from datetime import datetime
-
-    # removes all data after end date
-    end = datetime(year, 12, 31)
-
-    iend = len(data) - 1
-    while datetime.strptime(data[iend][0], '%d-%m-%Y') > end:
-        iend = iend - 1
-    data = data[:iend+1]
-
-    return data
-
-def remove_begin_dates(data):
-
-    from datetime import datetime
-
-    begin = datetime(year, 1, 1)
-
-    ibegin = 0
-    while datetime.strptime(data[ibegin][0], '%d-%m-%Y') < begin:
-        ibegin = ibegin + 1
-    data = data[ibegin:]
-
-    return data
-
 def create_sales(data):
+    """
+    This is the principal function.  It loops through each row of the data and does the following:
+    1.  Skips unnecessary rows.
+    2.  Keeps track of 'current' balances whenever a buy occurs.
+    3.  Whenever a sale occurs, calculate the buy price and add the sale and purchase price with quantities and fees to dedicated lists.
+    After looping, we remove from sales those that were at a loss and where a repurchase occured within two months (until they are sold)
+    We then calculate the same from the previous year and check if those repurchases have been sold.  If so, those losses are carried over to this year.
+    Input: data = list of lists containing all transaction data
+    """
 
     from datetime import datetime
 
@@ -165,7 +160,7 @@ def create_sales(data):
     # write csv file with gains and fees
     write_output_file(sales_write,fees,reduced_losses_write,carry_over_write)
 
-    return sales
+    return sales, balances
 
 def carry_over_losses(last_years_sales, all_sales):
     """
@@ -186,7 +181,7 @@ def carry_over_losses(last_years_sales, all_sales):
                 if key not in carry_over:
                     carry_over[key] = []
 
-                if debug:
+                if is_debug:
                     print("\nthis row is not in last years sales", row, '\n', all_sales[key][idx])
 
                 # calculate gains difference between the two years and append to carry_over
@@ -274,7 +269,7 @@ def reduce_losses(year,balances,buys,sales):
                     continue 
 
                 if total_buy + balances_key['amounts'][0] <= amount:
-                    if debug:
+                    if is_debug:
                         print('balances_key  = ',balances_key)
                     current_buy = balances_key['amounts'][0]
                     total_buy = total_buy + current_buy
@@ -283,14 +278,14 @@ def reduce_losses(year,balances,buys,sales):
                         date = datetime.strptime(balances_key['dates'][0], '%d-%m-%Y')
 
                 else:
-                    if debug:
+                    if is_debug:
                         print('balances_key  = ',balances_key)
                     current_buy = amount - total_buy
                     total_buy = amount
                     balances_key['amounts'][0] = balances_key['amounts'][0] - current_buy
 
                 # subtract amount from isale
-                if debug:
+                if is_debug:
                     print('REDUCING SALE!!!!', key )
                     print('before', sales[key][isale] )
                     print('current buy = ',current_buy)
@@ -298,7 +293,7 @@ def reduce_losses(year,balances,buys,sales):
                 sales[key][isale][3] = sales[key][isale][3] - current_buy
                 sales[key][isale][6] = -sales[key][isale][3]*(sales[key][isale][4] - sales[key][isale][5])
 
-                if debug:
+                if is_debug:
                     print('after', sales[key][isale] )
 
                 # define and initialize list for each sale in loss that is going to be reduced due to a still open purchase within 2 months
@@ -313,7 +308,7 @@ def reduce_losses(year,balances,buys,sales):
                 reduced_losses[key][-1][3] = reduced_losses[key][-1][3] + current_buy
                 reduced_losses[key][-1][6] = -reduced_losses[key][-1][3]*(sales[key][isale][4] - sales[key][isale][5])
 
-                if debug:
+                if is_debug:
 #                    print('reduced_losses', reduced_losses[key][0] )
                     print('reduced_losses', reduced_losses[key])
 
@@ -432,8 +427,228 @@ def add_sale(idx,ticker,price,amount,balances,min_prices,row,sales):
 
     return sales
 
-def update_balances(idx,ticker,price,amount,min_prices,balances,buys,row):
+def define_remaining_tokens(balances):
+    """
+    Takes the remaining balances and creates list of the remaining tickers
+    Input: balances = a dictionary for each token of dictionaries (id, date, price, and amount), each containing a list with each transaction
+    Output: a list of tickers that have remaining balances
+    """
+    # loop through balances and append each ticker to list
+    tickers = []
+    for ticker in balances:
+        if ticker not in tickers:
+            tickers.append(ticker)
+
+    return tickers
+
+def read_api():
+    """
+    Read the API key from file.  This must be located in the running directory.
+    Inputs: -
+    Outputs: the API key
+    """
+    file_path = 'api.txt'
     
+    with open(file_path, 'r') as file:
+        api_key = file.read()
+    
+    return api_key
+
+def query_coingecko(url,headers):
+    """
+    Queries CoinGecko at the specified URL with the specified headers.
+    Inputs: url = URL to be queried; headers = headers to send during the query.
+    Outputs: a list of lists of the returned data
+    """
+    import requests
+    done = False
+    while not done:
+        try:
+            response = requests.get(url, headers=headers)
+            data = response.json()
+            done = True
+        except ValueError:
+            print("valueError = ", ValueError)
+            time.sleep(60)
+            continue
+
+    return data
+
+def define_url(query_type,query_list):
+    """
+    Defines the URL to be queried
+    Inputs: query_type = defines what type of query we will perform ('apis'/'prices'); query_list = list of API IDs
+    Outputs: URL to be queried
+    """
+    if query_type == 'apis':
+        url = "https://api.coingecko.com/api/v3/coins/list"
+    elif query_type == 'prices':
+#        url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids="
+        url = "https://api.coingecko.com/api/v3/simple/price?ids="
+        
+        # add tokens to url string
+        for token in query_list:
+            url += token
+            url += '%2C'
+
+        # remove final '%2C' string
+        url = url[:-3]
+
+        url += "&vs_currencies=usd&include_market_cap=true"
+    else:
+        print("This query type is not supported")
+        import sys
+        sys.exit()
+
+    return url
+
+def find_api_ids(tickers):
+    """
+    Takes a list of tickers and converts it to a list of API IDs
+    Inputs: tickers = a list of tickers that have remaining balances
+    Outputs: apis = a dictionary with each API ID and its corresponding ticker, apis_list = a list of API IDs corresponding to tickers
+    """
+    # read API key from file
+    api_key = read_api()
+
+    # set headers for querying
+    headers['x-cg-demo-api-key'] = api_key + "\t"
+
+    # query CoinGecko for all tickers and API IDs
+    url = define_url('apis',[])
+    data = query_coingecko(url,headers)
+
+    # create list with lowercase tickers
+    lower_tickers = []
+    for ticker in tickers:
+        lower_tickers.append(ticker.lower())
+
+    # create list of API IDs from ticker list
+    apis, apis_list = {}, []
+    for token in data:
+        if token['symbol'] in lower_tickers and token['id'] not in apis_list:
+            apis[token['id']] = token['symbol']
+            apis_list.append(token['id'])
+
+    return apis, apis_list
+
+def find_api_prices(data,apis,apis_list):
+    """
+    Reduce API list removing all API IDs that are not the tokens we are looking for.  e.g. We want altair and not aircoin-on-blast for the ticker air.
+     We choose the one with the biggest market cap.  We then store the price for this token.
+    Inputs: data = dictionary of dictionaries with price and market cap for each API ID; apis = a dictionary with each API ID and its corresponding ticker;
+     apis_list = a list of API IDs corresponding to tickers
+    Outputs: a dictionary with the price for each ticker
+    """
+    ticker_prices, ticker_mcs = {}, {}
+    # loop through each token
+    for api in apis_list:
+
+        # check symbol for each API ID
+        symbol = apis[api]
+
+        # if price has not been stored for this symbol, store price
+        if symbol not in ticker_prices:
+            if data[api]:
+                ticker_prices[symbol] = data[api]['usd']
+                ticker_mcs[symbol] = data[api]['usd_market_cap']
+        else:
+            # if currently stored API ID has a lower market cap, replace
+            if data[api] and ticker_mcs[symbol] < data[api]['usd_market_cap']:
+                ticker_prices[symbol] = data[api]['usd']
+                ticker_mcs[symbol] = data[api]['usd_market_cap']
+
+    return ticker_prices
+
+def query_tokens(tickers):
+    """
+    Takes the tickers and queries CoinGecko for the current price of each
+    Input: tickers = a list of tickers that have remaining balances
+    Output: a dictionary with the current price for each ticker
+    """
+    # find API IDs corresponding to tickers list
+    apis, apis_list = find_api_ids(tickers)
+
+    # query CoinGecko with API IDs list
+    url = define_url('prices',apis_list)
+    data = query_coingecko(url,headers)
+
+    # create dictionary with prices for each ticker
+    current_prices = find_api_prices(data,apis,apis_list)
+
+    return current_prices
+
+def write_potential_token_losses(balances):
+    """
+    Takes the remaining balances and writes a csv file with each remaining token and the amount that should be sold to maximize losses
+    Inputs: balances = a dictionary for each token of dictionaries (id, date, price, and amount), each containing a list with each transaction
+    Outputs: 0
+    """
+    import csv
+
+    # make a list of the remaining tokens
+    tickers = define_remaining_tokens(balances)
+
+    # create a dictionary with the current price for each of the remaining tokens
+    current_prices = query_tokens(tickers)
+    print(current_prices)
+
+    # create file to write losses
+    outfile = str(year) + '/potentialLosses' + str(year) + '.csv'
+    with open(outfile, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerows([['Ticker','Potential Loss','Amount (ticker)','Current price ($)', 'Remaining (ticker)', 'Remaining ($)']])
+
+    # loop through remaining tickers
+    for ticker in tickers:
+
+        # if token is no longer listed, give it a 0 price
+        if ticker.lower() not in current_prices:
+            current_price = 0
+        else:
+            current_price = current_prices[ticker.lower()]
+
+        # calculate potential loss and amount that must be sold to obtain this loss
+        loss, amount = calculate_potential_token_loss(current_price,balances[ticker])
+    
+        # write to file token loss and amount that must be sold to obtain this loss
+        with open(outfile,'a') as file:
+            i = [ticker, loss, amount, current_price, sum(balances[ticker]['amounts']), sum(balances[ticker]['amounts'])*current_price]
+            file.write(','.join([str(x) for x in i]))
+            file.write('\n')
+            
+    return 0
+
+def calculate_potential_token_loss(current_price,balance):
+    """
+    Takes the current price and the price and amount for each of the remaining purchases for the current token, and calculates the maximum losses that could be declared by selling each lot sequentially
+    Input: current_price = the current price for this token; balance = a dictionary for a token of dictionaries (id, date, price, and amount), each containing a list with each transaction; 
+    Output: the potential loss for a specific ticker and the amount that must be sold to achieve this loss
+    """
+    if not balance:
+        return 0, 0
+
+    sum_loss, sum_amount, max_loss, max_amount = 0, 0, 0, 0
+    for idx, price in enumerate(balance['prices']):
+        amount = balance['amounts'][idx]
+        sum_loss += amount*(current_price - price)
+        sum_amount += amount
+        if max_loss > sum_loss:
+            max_loss = sum_loss
+            max_amount = sum_amount
+
+    return max_loss, max_amount
+
+def update_balances(idx,ticker,price,amount,min_prices,balances,buys,row):
+    """
+    Updates the balances, adding to the list for purchases and removing from the list or reducing the amount for sales
+    Input: idx = id of the transaction; ticker = ticker of the current token; price = price of the buy or sell, 
+     amount = the amount bought or sold (positive for buy); min_prices = a dictionary containing the minimum price ever experienced since the first transaction in the csv file for each ticker;
+     balances = a dictionary for each token of dictionaries (id, date, price, and amount), each containing a list with each transaction; buys = a dictionary containing a list for each ticker with pairs of transaction id and amount;
+     row = a list of the data for the current transaction
+    Output: price = if sell, the price at which the token was bought (this can be a mean), if buy, garbage; buys = a dictionary containing a list for each ticker with pairs of transaction id and amount;
+     balances = a dictionary for each token of dictionaries (id, date, price, and amount), each containing a list with each transaction; buys = a dictionary containing a list for each ticker with pairs of transaction id and amount;
+    """
     # if positive, add to end of list.
     if amount > 0:
         date = row[0]
@@ -552,5 +767,7 @@ if __name__ == '__main__':
 #    up_to_data = remove_end_dates(data)
     up_to_data = list(data)
 
-    sales = create_sales(up_to_data)
+    sales, balances = create_sales(up_to_data)
     
+    # write a file with the maximized potential losses for each token if sold correctly
+    write_potential_token_losses(balances)

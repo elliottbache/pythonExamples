@@ -1,10 +1,13 @@
 # global variables
 ##################
-is_debug = True
-year = 2023
-beginning_of_time_year = 2023
-file_name = str(year) + '/cryptos - Tx.csv'
+is_debug = False
+year = 2024
+beginning_of_time_year = 2021
+file_name = str(year) + '/mim - tx.csv'
+file_name_next_year = str(year) + '/mim2025 - tx.csv'
+#file_name = "C:/Users/ellio/Downloads/mim - tx.csv"
 #file_name = str(year) + '/cryptos.csv'
+is_fifo = True
 
 old_coins = ['USD','ETH','USDC','USDT','BNB','SOL','BUSD','TOK','VLX','Deeznuts','METIS','LEAFTY','B20','SPI','PAINT','XED','DDIM','RLY','Minifootball','KISHU','Highrise','ERN','GLMR','LOOKS','YUZU','BTC','SOL','EUR','OVR','XYM','BLOK','EWT','ENJ','KKT','GMS','IOT','DPR','STUD','Cryptoshack','Highrise creature','Osiris cosmic kids','ChubbyKaiju','Bridge over troubled water','POLP','KSM','CRO']
 
@@ -57,10 +60,17 @@ def create_sales(data):
     from datetime import datetime
 
     min_prices, buys, last_years_buys, sales, all_sales, last_years_sales, carry_over, fees, balances, last_years_balances = {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
+
     for idx, row in enumerate(data):
         
         # define variables for this row
-        ticker = row[2]
+        ticker = row[2].rstrip()
+
+
+        if is_debug and ( ticker == 'SOL' or ticker == 'feeSOL'):
+            print(row)
+
+
         amount = float(row[3])
 
         # if fee is incorrectly listed as a positive amount, change to negative
@@ -70,16 +80,17 @@ def create_sales(data):
         is_price, price = set_price(ticker,amount,min_prices,row)
         wallet = row[8]
         chain = row[9]
+        notes = row[11]
 
         # skip internal transfer rows
-        if '-' in wallet or '-' in chain:
+        if ('-' in wallet and chain != "Hedera") or '-' in chain:
             # check that we don't have a transfer with prices.  A transfer with prices directly preceded by a transfer w/o prices would be the corresponding transfer fees & would be valid
             if (row[4] or row[5]) and idx > 0 and data[idx-1][8] != wallet:
                 print("We shouldn't have a transfer with sell prices.", row)
                 exit()
             continue
 
-        # update min prices in case we don't have a buy price, we use the min price of all time for that token
+        # update min prices.  This min price is used in cases where we don't have a buy price.  FIFO min price is defind in reduce_balances
         if is_price:
             min_prices = update_min_prices(ticker,price,min_prices)
 
@@ -131,6 +142,10 @@ def create_sales(data):
     sales, reduced_losses = reduce_losses(year,balances,buys,sales)
 
     # for sales up to last year, if we have a sale at a loss and there are purchases within two months, then we don't compute until they are sold
+    """
+    print("last_years_balances = ", last_years_balances['HUSKY'])
+    exit()
+    """
     last_years_sales, _ = reduce_losses(year-1,last_years_balances,last_years_buys,last_years_sales)
 
     # for sales up to this year, if we have a sale at a loss and there are purchases within two months, then we don't compute until they are sold
@@ -278,7 +293,7 @@ def reduce_losses(year,balances,buys,sales):
                         date = datetime.strptime(balances_key['dates'][0], '%d-%m-%Y')
 
                 else:
-                    if is_debug:
+                    if is_debug and balances_key:
                         print('balances_key  = ',balances_key)
                     current_buy = amount - total_buy
                     total_buy = amount
@@ -396,7 +411,8 @@ def add_fee(ticker,price,amount,balances,min_prices,row,fees):
             sell_price = float(row[4])*float(row[1])
         else:
             print("Why is there no sale price?",row)
-            exit()
+            if not is_debug:
+                exit()
 
     # add new ticker to fees
     if ticker[3:] not in fees:
@@ -415,7 +431,8 @@ def add_sale(idx,ticker,price,amount,balances,min_prices,row,sales):
             sell_price = float(row[4])*float(row[1])
         else:
             print("Why is there no sale price?",row)
-            exit()
+            if not is_debug:
+                exit()
 
     # add new ticker to sales
     if ticker not in sales:
@@ -461,6 +478,8 @@ def query_coingecko(url,headers):
     Outputs: a list of lists of the returned data
     """
     import requests
+    import time
+
     done = False
     while not done:
         try:
@@ -591,7 +610,8 @@ def write_potential_token_losses(balances):
 
     # create a dictionary with the current price for each of the remaining tokens
     current_prices = query_tokens(tickers)
-    print(current_prices)
+    print("current_prices = ", current_prices)
+    exit()
 
     # create file to write losses
     outfile = str(year) + '/potentialLosses' + str(year) + '.csv'
@@ -641,7 +661,7 @@ def calculate_potential_token_loss(current_price,balance):
 
 def update_balances(idx,ticker,price,amount,min_prices,balances,buys,row):
     """
-    Updates the balances, adding to the list for purchases and removing from the list or reducing the amount for sales
+    Updates the balances, adding to the list for purchases and removing from the list or reducing the amount for sales.  Futures are not added or removed.
     Input: idx = id of the transaction; ticker = ticker of the current token; price = price of the buy or sell, 
      amount = the amount bought or sold (positive for buy); min_prices = a dictionary containing the minimum price ever experienced since the first transaction in the csv file for each ticker;
      balances = a dictionary for each token of dictionaries (id, date, price, and amount), each containing a list with each transaction; buys = a dictionary containing a list for each ticker with pairs of transaction id and amount;
@@ -649,6 +669,9 @@ def update_balances(idx,ticker,price,amount,min_prices,balances,buys,row):
     Output: price = if sell, the price at which the token was bought (this can be a mean), if buy, garbage; buys = a dictionary containing a list for each ticker with pairs of transaction id and amount;
      balances = a dictionary for each token of dictionaries (id, date, price, and amount), each containing a list with each transaction; buys = a dictionary containing a list for each ticker with pairs of transaction id and amount;
     """
+    if 'Futures 10X' in row[11]:
+        return float(row[7]), buys, balances
+    
     # if positive, add to end of list.
     if amount > 0:
         date = row[0]
@@ -657,10 +680,6 @@ def update_balances(idx,ticker,price,amount,min_prices,balances,buys,row):
             buys[ticker] = []
         buys[ticker].append([idx,amount])
     
-    # else subtract from first element. 
-        # when first element is 0, remove and continue with next
-        # if no more elements, continue to next row and set price as min overall price for that ticker
-        # sum(price*amount)/total amount
     if amount < 0:
         price, balances = reduce_balances(ticker,amount,min_prices,balances,row)
 
@@ -685,6 +704,14 @@ def increase_balances(ticker,idx,date,price,amount,balances):
     return balances
 
 def reduce_balances(ticker,amount,min_prices,balances,row):
+    """
+    Reduce the balances for each sale and calculates the purchase price.  Futures are not taken into account
+    """
+    from datetime import datetime
+
+    if 'Futures 10X' in row[11]:
+        return float(row[7]), balances
+
     # keep looping while there is still amount to be subtracted from first elements and while there are still elements
     sum_price = 0 # this is a sum of the prices times the amounts
     remaining_amount = amount # the remaining amount to be subtracted
@@ -694,24 +721,62 @@ def reduce_balances(ticker,amount,min_prices,balances,row):
         print("Must change the amount for this row.",row)
         exit()
 
-    # if no balance is available for this ticker
+    if is_debug:
+        if ticker == 'SOL':
+            print("\n", ticker)
+            print(row)
+            print(balances[ticker])
+
+    # if no balance is available for this ticker, set price and return
     if not balances or ticker not in balances or len(balances[ticker]['amounts']) == 0:
+
+        # if we have a minimum price for this ticker, set this price.  Otherwise, the price is 0
         if ticker in min_prices:
             sum_price = min_prices[ticker]
+
+        # if the ticker is not one of the old coins that were not well documented and the euro gains are more than 1 cent, write warning
         if ((ticker[:3] != 'fee' and ticker not in old_coins) or (ticker[:3] == 'fee' and ticker[3:] not in old_coins)) and abs(float(row[3])*float(row[5])) > 0.01:
-            print("No balance is available for this row, but we are reducing balance by ",abs(float(row[3])*float(row[5]))," euros",row)
+            print(balances[ticker])
+            print(row)
+            print("No balance is available for this row.  We are trying to reduce balance by ",abs(float(row[3])*float(row[5]))," euros",row, "\n")
+
         return sum_price, balances
 
-    # error catching for larger sell amounts than currently available.  The lowest price is used for the missing amounts
+    # error catching for larger sell amounts than currently in balance.  The lowest price is used for the missing amounts
     if abs(amount) > sum(balances[ticker]['amounts']):
-        min_price = min(balances[ticker]['prices'])
-#        min_price = min_prices[ticker]
+
+        # print warning if the maximum possible sale amount is greater than 1 cent
+        if abs(max(balances[ticker]['prices'])*(abs(amount) - sum(balances[ticker]['amounts']))) > 50 and datetime.strptime(row[0], '%d-%m-%Y') >= datetime(year, 1, 1):
+            if is_debug:
+                print(row)
+                print("current balance for ", ticker, " is ",balances[ticker])
+            print("resetting balance to reflect that we are missing a purchase for ", amount, " ", ticker, ".  Old balance = ",sum(balances[ticker]['amounts']), ". New balance = ",abs(amount),". Balance difference is ", abs(amount) - sum(balances[ticker]['amounts']), " Difference is $",abs(max(balances[ticker]['prices'])*(abs(amount) - sum(balances[ticker]['amounts']))),"\n")
+
+            """
+            # print an additional warning if this is not an old coin
+            if (ticker[:3] != 'fee' and ticker not in old_coins) or (ticker[:3] == 'fee' and ticker[3:] not in old_coins):
+                print("Sell amount is larger than current balance by ",max(balances[ticker]['prices'])*(abs(amount) - sum(balances[ticker]['amounts']))," euros at max price ",max(balances[ticker]['prices']),row)
+            """
+
+        # min_price is the minimum of all prices unless FIFO in which case min_price is the first price
+        if is_fifo:
+            min_price = balances[ticker]['prices'][0]
+        else:
+            min_price = min(balances[ticker]['prices'])
+
+        # increment balance for missing balances
         idx = balances[ticker]['prices'].index(min_price)
         balances[ticker]['amounts'][idx] = balances[ticker]['amounts'][idx] + abs(amount) - sum(balances[ticker]['amounts'])
-        if ((ticker[:3] != 'fee' and ticker not in old_coins) or (ticker[:3] == 'fee' and ticker[3:] not in old_coins)) and abs(max(balances[ticker]['prices'])*(abs(amount) - sum(balances[ticker]['amounts']))) > 0.01:
-            print("Sell amount is larger than current balance by ",max(balances[ticker]['prices'])*(abs(amount) - sum(balances[ticker]['amounts']))," euros at max price ",max(balances[ticker]['prices']),row)
 
+    # calculate price and update balances
     while remaining_amount < 0 and balances[ticker] and len(balances[ticker]['prices']) > 0:
+
+        if is_debug:
+            if ticker == 'SOL':
+                print("balances = ", balances[ticker])
+                print("remaining_amount = ", remaining_amount)
+                print("balances[ticker]['prices'][0] = ", balances[ticker]['prices'][0])
+
         # if the specified amount is less than the first element in list
         if abs(remaining_amount) < balances[ticker]['amounts'][0]:
             balances[ticker]['amounts'][0] = balances[ticker]['amounts'][0] + remaining_amount
@@ -722,12 +787,22 @@ def reduce_balances(ticker,amount,min_prices,balances,row):
             sum_price = sum_price + balances[ticker]['amounts'][0]*balances[ticker]['prices'][0]
             del balances[ticker]['amounts'][0], balances[ticker]['prices'][0], balances[ticker]['dates'][0], balances[ticker]['idx'][0]
 
+    if is_debug:
+        if ticker == 'SOL':
+            print("\nprice = ",sum_price/-amount)
+            print("balances = ", balances[ticker], "\n")
+
+
     return sum_price/-amount, balances
 
 def set_price(ticker,amount,min_prices,row):
-
     # set buy price depending on conditions
+    # outputs: is_price = True if we have a valid buy price (False for FIFO); price = buy price (min_price for FIFO)
     try:
+        # if FIFO and sale, force exception and thus never have a buy price without calculating
+        if amount < 0 and is_fifo and 'Futures 10X' not in row[11]:
+            price = float('?')
+
         price = float(row[7])
         is_price = True
     except:
@@ -739,17 +814,23 @@ def set_price(ticker,amount,min_prices,row):
         if amount > 0 and '-' not in row[8] and '-' not in row[9]:
             print('This data is a purchase but with no buy price in euros. Fix this!!!')
             print(row)
-            exit()
+            if not is_debug:
+                exit()
 
     return is_price, price
 
 def update_min_prices(ticker,price,min_prices):
     # update min price for that ticker
+    # inputs: price = buy price
     if price and price != -1:
         if ticker not in min_prices:
             min_prices[ticker] = price
         else:
-            min_prices[ticker] = min(price,min_prices[ticker])
+            # if FIFO then use the last price as min_price
+            if is_fifo:
+                min_prices[ticker] = price
+            else:
+                min_prices[ticker] = min(price,min_prices[ticker])
 
     return min_prices
 
@@ -760,6 +841,10 @@ if __name__ == '__main__':
     # read data from csv
     data = read_csv(file_name)
 
+    # read following years data and append
+    data_next_year = read_csv(file_name_next_year)
+    data += data_next_year[1:]
+
     # clean data
     data = clean_data(data)
 
@@ -769,5 +854,8 @@ if __name__ == '__main__':
 
     sales, balances = create_sales(up_to_data)
     
+    print("HAY QUE PREGUNTARLE A VIRGINIA SI LAS PERDIDAS NO LIQUIDATORIAS DE AÑOS ANTERIORES SE DECLARARON.  SINO, DECLARAR PERDIDAS DE AÑOS ANTERIORES QUE SALEN CON EL PROGRAMA.  SI SÍ, SÓLO DECLARAR PERDIDAS QUE SALIERON EN LO QUE DECLARÓ VIRGINIA")
+    print("HAY QUE PREGUNTARLE A VIRGINIA SI LOS FUTUROS SE DECLARAN A PARTE")
+### This function is not ready.  Something is wrong with the query_coingecko function.  The query returns a ValueError.  Maybe from too many arguments?  Maybe b/c it starts with "-3"?
     # write a file with the maximized potential losses for each token if sold correctly
-    write_potential_token_losses(balances)
+#    write_potential_token_losses(balances)

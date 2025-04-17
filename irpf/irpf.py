@@ -1,7 +1,7 @@
 # global variables
 ##################
-is_debug = True
-year = 2023
+is_debug = False
+year = 2024
 beginning_of_time_year = 2021
 file_name = str(year) + '/mim - tx.csv'
 file_name_next_year = str(year) + '/mim2025 - tx.csv'
@@ -59,29 +59,33 @@ def create_sales(data):
 
     from datetime import datetime
 
-    min_prices, buys, last_years_buys, sales, all_sales, last_years_sales, carry_over, fees, balances, last_years_balances = {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
+    min_prices, buys, last_years_buys, sales, futures_sales, all_sales, last_years_sales, carry_over, fees, balances, last_years_balances = {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
 
     for idx, row in enumerate(data):
         
         # define variables for this row
         ticker = row[2].rstrip()
 
-        """
-        if is_debug and ( ticker == 'SOL' or ticker == 'feeSOL'):
-            print(row)
-        """
-
-
+        # define amount bought or sold.  Positive is purchase
         amount = float(row[3])
 
         # if fee is incorrectly listed as a positive amount, change to negative
         if ticker[:3] == 'fee' and amount > 0:
             amount = -amount
 
-        is_price, price = set_price(ticker,amount,min_prices,row)
+        # define wallet, chain, and notes variables
         wallet = row[8]
         chain = row[9]
         notes = row[11]
+        
+        # check if futures
+        if 'Futures 10X' in notes:
+            is_futures = True
+        else:
+            is_futures = False
+
+        # set purchase price.  If no purchase price is available, is_price is False
+        is_price, price = set_price(is_futures,ticker,amount,min_prices,row)
 
         # skip internal transfer rows
         if ('-' in wallet and chain != "Hedera") or '-' in chain:
@@ -106,11 +110,13 @@ def create_sales(data):
         end = datetime(year, 12, 31)
         last_year_end = datetime(year-1, 12, 31)
 
-        if datetime.strptime(row[0], '%d-%m-%Y') <= last_year_end:
-            buy_price, last_years_buys, last_years_balances = update_balances(idx,bticker,price,amount,min_prices,last_years_balances,last_years_buys,row)
+        # update balances unless futures (except their fees) 
+        if not is_futures:
+            if datetime.strptime(row[0], '%d-%m-%Y') <= last_year_end:
+                buy_price, last_years_buys, last_years_balances = update_balances(idx,bticker,price,amount,min_prices,last_years_balances,last_years_buys,row)
 
-        if datetime.strptime(row[0], '%d-%m-%Y') <= end:
-            buy_price, buys, balances = update_balances(idx,bticker,price,amount,min_prices,balances,buys,row)
+            if datetime.strptime(row[0], '%d-%m-%Y') <= end:
+                buy_price, buys, balances = update_balances(idx,bticker,price,amount,min_prices,balances,buys,row)
 
         # if we have transferred to someone else, then no need to look at sales
         if 'Sent' in row[10]:
@@ -122,22 +128,31 @@ def create_sales(data):
             if not is_price:
                 price = buy_price
 
-            # add sale to list of sales
-            all_sales = add_sale(idx,bticker,price,amount,balances,min_prices,row,all_sales)
-
-            if datetime.strptime(row[0], '%d-%m-%Y') <= last_year_end:
+            if not is_futures:
 
                 # add sale to list of sales
-                last_years_sales = add_sale(idx,bticker,price,amount,balances,min_prices,row,last_years_sales)
+                all_sales = add_sale(is_futures,idx,bticker,price,amount,row,all_sales)
 
-            if datetime.strptime(row[0], '%d-%m-%Y') >= begin:
+                if datetime.strptime(row[0], '%d-%m-%Y') <= last_year_end:
 
-                # add sale to list of sales
-                sales = add_sale(idx,bticker,price,amount,balances,min_prices,row,sales)
+                    # add sale to list of sales
+                    last_years_sales = add_sale(is_futures,idx,bticker,price,amount,row,last_years_sales)
 
-                if ticker[:3] == 'fee':
-                    # add fee to list of fees
-                    fees = add_fee(ticker,price,amount,balances,min_prices,row,fees)
+                if datetime.strptime(row[0], '%d-%m-%Y') >= begin:
+
+                    # add sale to list of sales
+                    sales = add_sale(is_futures,idx,bticker,price,amount,row,sales)
+
+                    if ticker[:3] == 'fee':
+                        # add fee to list of fees
+                        fees = add_fee(ticker,amount,row,fees)
+
+            # if futures, update sales and fees and continue
+            else:
+
+                if datetime.strptime(row[0], '%d-%m-%Y') >= begin:
+
+                    futures_sales = add_sale(is_futures,idx,bticker,price,amount,row,futures_sales)
 
     # for current year's sales, if we have a sale at a loss and there are purchases within two months, then we don't compute until they are sold
     sales, reduced_losses = reduce_losses(year,balances,buys,sales)
@@ -152,12 +167,17 @@ def create_sales(data):
     carry_over = carry_over_losses(last_years_sales, all_sales)
 
     # remove indices from sales, reduced_losses, and carry_over
-    sales_write, reduced_losses_write, carry_over_write = {}, {}, {}
+    sales_write, futures_sales_write, reduced_losses_write, carry_over_write = {}, {}, {}, {}
     for key in sales:
         if key not in sales_write:
             sales_write[key] = []
         for sale in sales[key]:
             sales_write[key].append(sale[1:])
+    for key in futures_sales:
+        if key not in futures_sales_write:
+            futures_sales_write[key] = []
+        for sale in futures_sales[key]:
+            futures_sales_write[key].append(sale[1:])
     for key in reduced_losses:
         if key not in reduced_losses_write:
             reduced_losses_write[key] = []
@@ -170,9 +190,9 @@ def create_sales(data):
             carry_over_write[key].append(sale[1:])
 
     # write csv file with gains and fees
-    write_output_file(sales_write,fees,reduced_losses_write,carry_over_write)
+    write_output_file(sales_write,futures_sales_write,fees,reduced_losses_write,carry_over_write)
 
-    return sales, balances
+    return 0
 
 def carry_over_losses(last_years_sales, all_sales):
     """
@@ -447,7 +467,7 @@ def reduce_losses(year,balances,buys,sales):
         
     return sales, reduced_losses
 
-def write_output_file(sales,fees,reduced_losses,carry_over):
+def write_output_file(sales,futures_sales,fees,reduced_losses,carry_over):
 
     import csv
 
@@ -494,6 +514,24 @@ def write_output_file(sales,fees,reduced_losses,carry_over):
     with open(outfile, 'a', newline='') as f:
         writer = csv.writer(f)
         writer.writerows([[],['Comisiones totales',total_fees]])
+        writer.writerows([[],[],['Futuros'],['Fecha apertura','Fecha cierre','Token','Cantidad','Precio de compra','Precio de venta','Ganancias']])
+
+    total_gains = 0
+    with open(outfile,'a') as file:
+        for key in futures_sales:
+            token_gains = 0
+            for i in futures_sales[key]:
+
+                token_gains = token_gains + i[6]
+                total_gains = total_gains + i[6]
+
+                if abs(i[6]) > 5e-3:
+                    file.write(','.join([str(x) for x in i]))
+                    file.write('\n')
+
+    with open(outfile, 'a', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerows([[],['Ganancias totales futuros',total_gains]])
         writer.writerows([[],[],['Perdidas compensadas de anos anteriores'],['Fecha','Token','Cantidad','Precio de compra','Precio de venta','Ganancias']])
 
     total_gains = 0
@@ -520,7 +558,7 @@ def write_output_file(sales,fees,reduced_losses,carry_over):
 
     return 0
 
-def add_fee(ticker,price,amount,balances,min_prices,row,fees):
+def add_fee(ticker,amount,row,fees):
 
     if row[5]:
         sell_price = float(row[5])
@@ -540,7 +578,7 @@ def add_fee(ticker,price,amount,balances,min_prices,row,fees):
     
     return fees
 
-def add_sale(idx,ticker,price,amount,balances,min_prices,row,sales):
+def add_sale(is_futures,idx,ticker,price,amount,row,sales):
     """
     Adds a sale to the sales dictionary.
     Inputs: idx, ...
@@ -562,7 +600,10 @@ def add_sale(idx,ticker,price,amount,balances,min_prices,row,sales):
 
     # don't declare stuff that is very small
     if abs(amount*(price - sell_price)) > 1e-6:
-        sales[ticker].append([idx,row[0],ticker,-amount,price,sell_price,amount*(price - sell_price)])    
+        if is_futures:
+            sales[ticker].append([idx,row[10],row[0],ticker,-amount,price,sell_price,amount*(price - sell_price)])
+        else:
+            sales[ticker].append([idx,row[0],ticker,-amount,price,sell_price,amount*(price - sell_price)])
 
     return sales
 
@@ -791,9 +832,6 @@ def update_balances(idx,ticker,price,amount,min_prices,balances,buys,row):
     Output: price = if sell, the price at which the token was bought (this can be a mean), if buy, garbage; buys = a dictionary containing a list for each ticker with pairs of transaction id and amount;
      balances = a dictionary for each token of dictionaries (id, date, price, and amount), each containing a list with each transaction; buys = a dictionary containing a list for each ticker with pairs of transaction id and amount;
     """
-    if 'Futures 10X' in row[11]:
-        return float(row[7]), buys, balances
-    
     # if positive, add to end of list.
     if amount > 0:
         date = row[0]
@@ -924,16 +962,22 @@ def reduce_balances(ticker,amount,min_prices,balances,row):
 
     return sum_price/-amount, balances
 
-def set_price(ticker,amount,min_prices,row):
+def set_price(is_futures,ticker,amount,min_prices,row):
     # set buy price depending on conditions
     # outputs: is_price = True if we have a valid buy price (False for FIFO); price = buy price (min_price for FIFO)
     try:
-        # if FIFO and sale, force exception and thus never have a buy price without calculating
-        if amount < 0 and is_fifo and 'Futures 10X' not in row[11]:
-            price = float('?')
+        # if futures, use price
+        if is_futures:
+            price = float(row[7])
+            is_price = True
+        else:
+            
+            # if FIFO and sale, force exception and thus never have a buy price without calculating
+            if amount < 0 and is_fifo:
+                price = float('?')
 
-        price = float(row[7])
-        is_price = True
+            price = float(row[7])
+            is_price = True
     except:
         is_price = False
         if min_prices and ticker in min_prices:
@@ -981,12 +1025,13 @@ if __name__ == '__main__':
 #    up_to_data = remove_end_dates(data)
     up_to_data = list(data)
 
-    sales, balances = create_sales(up_to_data)
+    create_sales(up_to_data)
     
     print("HAY QUE PREGUNTARLE A VIRGINIA SI LAS PERDIDAS NO LIQUIDATORIAS DE AÑOS ANTERIORES SE DECLARARON.  SINO, DECLARAR PERDIDAS DE AÑOS ANTERIORES QUE SALEN CON EL PROGRAMA.  SI SÍ, SÓLO DECLARAR PERDIDAS QUE SALIERON EN LO QUE DECLARÓ VIRGINIA")
     print("HAY QUE PREGUNTARLE A VIRGINIA SI LOS FUTUROS SE DECLARAN A PARTE")
     print("ME DICE CHATGPT QUE TENGO QUE INTRODUCIR LAS PERDIDAS NO LIQUIDATORIAS EN RENTA WEB.  ES CIERTO?")
     print("https://sede.agenciatributaria.gob.es/Sede/ayuda/manuales-videos-folletos/manuales-ayuda-presentacion/irpf-2019/8-cumplimentacion-irpf/8_2-ganancias-perdidas-patrimoniales/8_2_1-conceptos-generales/8_2_1_1-concepto-ganancias-perdidas-patrimoniales/integracion-diferida-perdidas-patrimoniales-derivadas-transmisiones.html")
+    print("ENCONTRÉ ERRORES EN LA DECLARACIÓN DEL AÑO PASADO.  LOS DEBERÍA CORREGIR?")
 ### This function is not ready.  Something is wrong with the query_coingecko function.  The query returns a ValueError.  Maybe from too many arguments?  Maybe b/c it starts with "-3"?
     # write a file with the maximized potential losses for each token if sold correctly
 #    write_potential_token_losses(balances)

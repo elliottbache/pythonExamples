@@ -79,7 +79,7 @@ def create_sales(data):
         notes = row[11]
         
         # check if futures
-        if 'Futures 10X' in notes:
+        if 'Futures' in notes:
             is_futures = True
         else:
             is_futures = False
@@ -113,10 +113,10 @@ def create_sales(data):
         # update balances unless futures (except their fees) 
         if not is_futures:
             if datetime.strptime(row[0], '%d-%m-%Y') <= last_year_end:
-                buy_price, last_years_buys, last_years_balances = update_balances(idx,bticker,price,amount,min_prices,last_years_balances,last_years_buys,row)
+                buy_price, last_years_buys, last_years_balances = update_balances(is_futures,idx,bticker,price,amount,min_prices,last_years_balances,last_years_buys,row)
 
             if datetime.strptime(row[0], '%d-%m-%Y') <= end:
-                buy_price, buys, balances = update_balances(idx,bticker,price,amount,min_prices,balances,buys,row)
+                buy_price, buys, balances = update_balances(is_futures,idx,bticker,price,amount,min_prices,balances,buys,row)
 
         # if we have transferred to someone else, then no need to look at sales
         if 'Sent' in row[10]:
@@ -822,7 +822,7 @@ def calculate_potential_token_loss(current_price,balance):
 
     return max_loss, max_amount
 
-def update_balances(idx,ticker,price,amount,min_prices,balances,buys,row):
+def update_balances(is_futures,idx,ticker,price,amount,min_prices,balances,buys,row):
     """
     Updates the balances, adding to the list for purchases and removing from the list or reducing the amount for sales.  Futures are not added or removed.
     Input: idx = id of the transaction; ticker = ticker of the current token; price = price of the buy or sell, 
@@ -841,7 +841,7 @@ def update_balances(idx,ticker,price,amount,min_prices,balances,buys,row):
         buys[ticker].append([idx,amount])
     
     if amount < 0:
-        price, balances = reduce_balances(ticker,amount,min_prices,balances,row)
+        price, balances = reduce_balances(is_futures,ticker,amount,min_prices,balances,row)
 
     return price, buys, balances
 
@@ -863,13 +863,13 @@ def increase_balances(ticker,idx,date,price,amount,balances):
 
     return balances
 
-def reduce_balances(ticker,amount,min_prices,balances,row):
+def reduce_balances(is_futures,ticker,amount,min_prices,balances,row):
     """
     Reduce the balances for each sale and calculates the purchase price.  Futures are not taken into account
     """
     from datetime import datetime
 
-    if 'Futures 10X' in row[11]:
+    if is_futures:
         return float(row[7]), balances
 
     # keep looping while there is still amount to be subtracted from first elements and while there are still elements

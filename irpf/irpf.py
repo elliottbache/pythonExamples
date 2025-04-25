@@ -1,7 +1,7 @@
 # global variables
 ##################
 is_debug = False
-year = 2024
+year = 2023
 beginning_of_time_year = 2021
 file_name = str(year) + '/mim - tx.csv'
 file_name_next_year = str(year) + '/mim2025 - tx.csv'
@@ -112,11 +112,13 @@ def create_sales(data):
 
         # update balances unless futures (except their fees) 
         if not is_futures:
+            """
             if datetime.strptime(row[0], '%d-%m-%Y') <= last_year_end:
-                buy_price, last_years_buys, last_years_balances = update_balances(is_futures,idx,bticker,price,amount,min_prices,last_years_balances,last_years_buys,row)
+                buy_price, buy_idx, last_years_balances = update_balances(is_futures,idx,bticker,price,amount,min_prices,last_years_balances,row)
+            """
 
             if datetime.strptime(row[0], '%d-%m-%Y') <= end:
-                buy_price, buys, balances = update_balances(is_futures,idx,bticker,price,amount,min_prices,balances,buys,row)
+                buy_price, buy_idx, balances = update_balances(is_futures,idx,bticker,price,amount,min_prices,balances,row)
 
         # if we have transferred to someone else, then no need to look at sales
         if 'Sent' in row[10]:
@@ -131,17 +133,17 @@ def create_sales(data):
             if not is_futures:
 
                 # add sale to list of sales
-                all_sales = add_sale(is_futures,idx,bticker,price,amount,row,all_sales)
+                all_sales = add_sale(is_futures,idx,bticker,price,amount,buy_idx,row,all_sales)
 
                 if datetime.strptime(row[0], '%d-%m-%Y') <= last_year_end:
 
                     # add sale to list of sales
-                    last_years_sales = add_sale(is_futures,idx,bticker,price,amount,row,last_years_sales)
+                    last_years_sales = add_sale(is_futures,idx,bticker,price,amount,buy_idx,row,last_years_sales)
 
                 if datetime.strptime(row[0], '%d-%m-%Y') >= begin:
 
                     # add sale to list of sales
-                    sales = add_sale(is_futures,idx,bticker,price,amount,row,sales)
+                    sales = add_sale(is_futures,idx,bticker,price,amount,buy_idx,row,sales)
 
                     if ticker[:3] == 'fee':
                         # add fee to list of fees
@@ -152,19 +154,20 @@ def create_sales(data):
 
                 if datetime.strptime(row[0], '%d-%m-%Y') >= begin:
 
-                    futures_sales = add_sale(is_futures,idx,bticker,price,amount,row,futures_sales)
+                    futures_sales = add_sale(is_futures,idx,bticker,price,amount,buy_idx,row,futures_sales)
 
-    # for current year's sales, if we have a sale at a loss and there are purchases within two months, then we don't compute until they are sold
-    sales, reduced_losses = reduce_losses(year,balances,buys,sales)
+    # for current year's sales minus those where the 2-month rule applies
+    sales, reduced_losses = reduce_losses(year,balances,sales)
 
-    # for sales up to last year, if we have a sale at a loss and there are purchases within two months, then we don't compute until they are sold
-    last_years_sales, _ = reduce_losses(year-1,last_years_balances,last_years_buys,last_years_sales)
+    # for sales up to last year minus those where the 2-month rule applies
+#    last_years_sales, _ = reduce_losses(year-1,last_years_balances,last_years_sales)
+    last_years_sales, _ = reduce_losses(year-1,balances,last_years_sales)
 
-    # for sales up to this year, if we have a sale at a loss and there are purchases within two months, then we don't compute until they are sold
-    all_sales, _ = reduce_losses(year,balances,buys,all_sales)
+    # for sales up to this year minus those where the 2-month rule applies
+    all_sales, _ = reduce_losses(year,balances,all_sales)
 
     # carry over losses from previous years
-    carry_over = carry_over_losses(last_years_sales, all_sales)
+    carry_over = carry_over_losses(last_year_end,last_years_sales, all_sales)
 
     # remove indices from sales, reduced_losses, and carry_over
     sales_write, futures_sales_write, reduced_losses_write, carry_over_write = {}, {}, {}, {}
@@ -172,59 +175,77 @@ def create_sales(data):
         if key not in sales_write:
             sales_write[key] = []
         for sale in sales[key]:
-            sales_write[key].append(sale[1:])
+            sales_write[key].append(sale[2:])
     for key in futures_sales:
         if key not in futures_sales_write:
             futures_sales_write[key] = []
         for sale in futures_sales[key]:
-            futures_sales_write[key].append(sale[1:])
+            futures_sales_write[key].append(sale[2:])
     for key in reduced_losses:
         if key not in reduced_losses_write:
             reduced_losses_write[key] = []
         for reduced_loss in reduced_losses[key]:
-            reduced_losses_write[key].append(reduced_loss[1:])
+            reduced_losses_write[key].append(reduced_loss[2:])
     for key in carry_over:
         if key not in carry_over_write:
             carry_over_write[key] = []
         for sale in carry_over[key]:
-            carry_over_write[key].append(sale[1:])
+            carry_over_write[key].append(sale[2:])
 
     # write csv file with gains and fees
     write_output_file(sales_write,futures_sales_write,fees,reduced_losses_write,carry_over_write)
 
     return 0
 
-def carry_over_losses(last_years_sales, all_sales):
+def carry_over_losses(last_year_end,last_years_sales, all_sales):
     """
     We assume that all sales that were present from the beginning of time to last year should be present in the sales from the beginning of time to the present year.
-    If they are not present, that means that they were reduced since they did not meet the 2-month rule.  Since they are present in all sales up to the current year, 
-    this means that the following repurchase must have been closed allowing them to meeet the 2-month rule. 
+    If they are not present, that means that they were reduced since they did not meet the 2-month rule.  These losses compose the carry_over list of lists 
+    Inputs: last_years_sales = a list of lists with all sales that were declared up till last year, 
+    all_sales = a dictionary where each ticker has a list of lists containing the ID, date, ticker, sale amount, buy price, sale price, gains, excluding those that were removed due to 2-month rule
+    Outputs: carry_over = list of lists with the losses that were not declared in previous years since they met the 2-month rule, and now they no longer meet the 2-month rule
     """
-    carry_over = {}
-    # loop through last year's sales key
+    from datetime import datetime
+
+    # create dictionary of sets with indices from last_years_sales
+    last_years_sales_mapping = {}
     for key in last_years_sales:
 
-        # loop through last year's sales for this key
+        if len(last_years_sales[key]) > 0:
+            last_years_sales_mapping[key] = dict()
+
+        # loop through all sales for this key
         for idx, row in enumerate(last_years_sales[key]):
+
+            # add index to dictionary
+            last_years_sales_mapping[key][row[0]] = idx
+
+    carry_over = {}
+    # loop through all sales key
+    for key in all_sales:
+
+        # loop through all sales for this key
+        for idx, row in enumerate(all_sales[key]):
             
-            # if this year's sales is different from last year's
-            if len(last_years_sales[key]) > 0 and row != all_sales[key][idx]:
+            # if the sale from previous years is present in the all_sales dictionary but not last_year_sales
+            if datetime.strptime(row[2], '%d-%m-%Y') <= last_year_end and (key not in last_years_sales_mapping or row[0] not in last_years_sales_mapping[key] or row not in last_years_sales[key]):
 
                 if key not in carry_over:
                     carry_over[key] = []
 
                 if is_debug:
-                    print("\nthis row is not in last years sales", row, '\n', all_sales[key][idx])
+                    print("\nthis row ", row, " is not in last years sales")
 
                 # calculate gains difference between the two years and append to carry_over
                 new_sale = row.copy()
-                new_sale[3] = all_sales[key][idx][3] - row[3]
-                new_sale[6] = all_sales[key][idx][6] - row[6]
+                if key in last_years_sales_mapping and row[0] in last_years_sales_mapping[key]:
+                    new_sale[4] = row[4] - last_years_sales[key][last_years_sales_mapping[key][row[0]]][4]
+                    new_sale[7] = row[7] - last_years_sales[key][last_years_sales_mapping[key][row[0]]][7]
                 carry_over[key].append(new_sale)
 
     return carry_over
 
-def reduce_losses(year,balances,buys,sales):
+def reduce_losses(year,balances,sales):
     """
     Old method
     ----------
@@ -235,7 +256,7 @@ def reduce_losses(year,balances,buys,sales):
     ----------
     If sale at loss
         Search for unresolved purchase 2 months before or after
-            Search through balances from 2 months before to 2 months after
+            Search through balances from max(2 months before,purchase date) to 2 months after
                 Sum up balances until sale amount
                 Remove this amount from balances
                 Remove this amount from sales
@@ -243,7 +264,7 @@ def reduce_losses(year,balances,buys,sales):
 
     Inputs: year = the end year up to which the sales will be considered, balances = a dictionary for each token of dictionaries (id, date, price, and amount), each containing a list with each transaction, 
     buys = each of the purchases, 
-    sales = a dictionary where each ticker has a list of lists containing the ID, date, ticker, sale amount, buy price, sale price, gains
+    sales = a dictionary where each ticker has a list of lists containing the ID, date, ticker, sale amount, buy price, sale price, gains, buy_idx
     Outputs: sales = the sales original sales minus the ones don't count, reduced_losses = the undeclarable losses
     """
     from datetime import datetime
@@ -294,19 +315,16 @@ def reduce_losses(year,balances,buys,sales):
             # copy list of current sale
             this_sale = list(sale)
 
-            """
-            if is_debug and key == 'TIA':
+            if is_debug and key == 'DOT':
                 print("\nsales[key] = ", sales[key])
                 print("this_sale = ", isale, this_sale)
-            """
-
 
             # only sales up till current year
-            if datetime.strptime(this_sale[1], '%d-%m-%Y') > end:
+            if datetime.strptime(this_sale[2], '%d-%m-%Y') > end:
                 continue
 
             # if this sale is gain, continue
-            if this_sale[6] > 0:
+            if this_sale[7] > 0:
                 continue
 
             # initialize loop variables
@@ -319,23 +337,26 @@ def reduce_losses(year,balances,buys,sales):
                 # define the index of the current remaining purchase
                 idx = balances_key_idx[ibalance]
 
-                """
-                if is_debug and key == 'TIA':
+                if is_debug and key == 'DOT':
                     print("idx = ", idx)
                     print("balances_key = ", balances_key)
-                """
 
                 # define the date of the current remaining purchase
                 date = datetime.strptime(balances_key_dates[ibalance], '%d-%m-%Y')
 
-                """
-                if is_debug and key == 'TIA':
+                if is_debug and key == 'DOT':
                     print("date = ", date)
-                    print("datetime.strptime(sale[1], '%d-%m-%Y') + relativedelta(months=+2) = ", datetime.strptime(this_sale[1], '%d-%m-%Y') + relativedelta(months=+2))
-                """
+                    print("datetime.strptime(sale[1], '%d-%m-%Y') + relativedelta(months=+2) = ", datetime.strptime(this_sale[2], '%d-%m-%Y') + relativedelta(months=+2))
+
+                # continue if the current remaining purchase is not before the purchase that led to a negative sale
+                if this_sale[1] >= idx:
+                    if is_debug and key == 'DOT':
+                        print("this sale is too soon", this_sale[1],  idx)
+                    ibalance += 1
+                    continue 
 
                 # continue if the current remaining purchase is before 2 months before the negative sale 
-                if date < datetime.strptime(sale[1], '%d-%m-%Y') + relativedelta(months=-2):
+                if date < datetime.strptime(sale[2], '%d-%m-%Y') + relativedelta(months=-2):
                     ibalance += 1
                     continue 
                 """
@@ -346,16 +367,14 @@ def reduce_losses(year,balances,buys,sales):
                 """
 
                 # continue if the current remaining purchase is after 2 months after the negative sale 
-                if date > datetime.strptime(this_sale[1], '%d-%m-%Y') + relativedelta(months=+2):
+                if date > datetime.strptime(this_sale[2], '%d-%m-%Y') + relativedelta(months=+2):
                     ibalance += 1
                     continue
 
-                """
-                if is_debug and key == 'TIA':
+                if is_debug and key == 'DOT':
                     print("sales[key][idx_sale] = ", sales[key][isale-idx_diff])
                     print("balances_key = ", balances_key)
                     print("balances_key['amounts'][ibalance] = ", balances_key_amounts[ibalance])
-                """
 
 
                 # create list for each sale in loss that is going to be reduced due to a still open purchase within 2 months
@@ -368,71 +387,58 @@ def reduce_losses(year,balances,buys,sales):
                     # initialize losses list
                     if len(reduced_losses[key]) == 0 or reduced_losses[key][-1][0] != this_sale[0]:
                         reduced_losses[key].append(list(this_sale))
-                        reduced_losses[key][-1][3] = 0
-                        reduced_losses[key][-1][6] = 0
+                        reduced_losses[key][-1][4] = 0
+                        reduced_losses[key][-1][7] = 0
 
                 # sum up current balance
                 sum_balances += balances_key_amounts[ibalance]
 
-                """
-                if is_debug and key == 'TIA':
+                if is_debug and key == 'DOT':
                     print("sum_balances = ", sum_balances)
-                """
 
                 # update sales & reduced_losses
-                if sum_balances >= this_sale[3]:
+                if sum_balances >= this_sale[4]:
 
-                    """
-                    if is_debug and key == 'TIA':
-                        print("sum_balances >= this_sale[3] ",sum_balances , this_sale[3])
-                    """
+                    if is_debug and key == 'DOT':
+                        print("sum_balances >= this_sale[3] ",sum_balances , this_sale[4])
 
                     # remove sale
                     del sales[key][isale-idx_diff]
                     idx_diff += 1
 
-                    """
-                    if is_debug and key == 'TIA':
+                    if is_debug and key == 'DOT':
                         print("idx_diff = ", idx_diff)
-                    """
 
 
                     # set the undeclared losses to reduced_losses
-                    reduced_losses[key][-1][3] = this_sale[3]
-                    reduced_losses[key][-1][6] = -this_sale[3]*(this_sale[4] - this_sale[5])
+                    reduced_losses[key][-1][4] = this_sale[4]
+                    reduced_losses[key][-1][7] = -reduced_losses[key][-1][4]*(this_sale[5] - this_sale[6])
 
                 else:
 
-                    sales[key][isale-idx_diff][3] = sales[key][isale-idx_diff][3] - balances_key_amounts[ibalance]
-                    sales[key][isale-idx_diff][6] = -sales[key][isale-idx_diff][3]*(sales[key][isale-idx_diff][4] - sales[key][isale-idx_diff][5])
+                    # remove sales where the 2-month rule applies
+                    sales[key][isale-idx_diff][4] = sales[key][isale-idx_diff][4] - balances_key_amounts[ibalance]
+                    sales[key][isale-idx_diff][7] = -sales[key][isale-idx_diff][4]*(sales[key][isale-idx_diff][5] - sales[key][isale-idx_diff][6])
 
                     # update the undeclared losses to reduced_losses
-                    reduced_losses[key][-1][3] += balances_key_amounts[ibalance]
-                    reduced_losses[key][-1][6] = -this_sale[3]*(this_sale[4] - this_sale[5])
+                    reduced_losses[key][-1][4] += balances_key_amounts[ibalance]
+                    reduced_losses[key][-1][7] = -reduced_losses[key][-1][4]*(this_sale[5] - this_sale[6])
 
-                """
-                if is_debug and key == 'TIA':
+                if is_debug and key == 'DOT':
                     print("reduced_losses[key] = ", reduced_losses[key])
-                """
-
-                """
-                if is_debug and key == 'TIA':
                     print("sales[key][isale-idx_diff] = ", this_sale)
-                """
 
-                if sum_balances > this_sale[3]:
+                if sum_balances > this_sale[4]:
 
                     # set the remaining balance to the sum of the balances minus the sale amount
-                    balances_key_amounts[ibalance] = sum_balances - this_sale[3]
+                    balances_key_amounts[ibalance] = sum_balances - this_sale[4]
 
                     # cap the sum of the balances at the sale amount
-                    sum_balances = this_sale[3]
+                    sum_balances = this_sale[4]
 
-                    """
-                    if is_debug and key == 'TIA':
+                    if is_debug and key == 'DOT':
                         print("balances_key['amounts'][ibalance] = ", balances_key_amounts[ibalance])
                         print("sum_balances = ", sum_balances, "\n")
-                    """
 
 #                        time.sleep(1)
 
@@ -447,11 +453,9 @@ def reduce_losses(year,balances,buys,sales):
                     del balances_key_amounts[ibalance]
                     del balances_key_prices[ibalance]
 
-                """
-                if is_debug and key == 'TIA':
+                if is_debug and key == 'DOT':
                     print("balances_key['amounts'] = ", balances_key_amounts, "\n")
                     print("sum_balances = ", sum_balances, "\n")
-                """
 
                 """
                 if key == 'TIA':
@@ -459,11 +463,9 @@ def reduce_losses(year,balances,buys,sales):
                 """
 
 #                    time.sleep(1)
-        """
-        if is_debug and key == 'TIA':
+        if is_debug and key == 'DOT':
             print("balances_key = ", balances_key)
             print("sales[key] = ", sales[key], "\n")
-        """
         
     return sales, reduced_losses
 
@@ -578,11 +580,11 @@ def add_fee(ticker,amount,row,fees):
     
     return fees
 
-def add_sale(is_futures,idx,ticker,price,amount,row,sales):
+def add_sale(is_futures,idx,ticker,price,amount,buy_idx,row,sales):
     """
     Adds a sale to the sales dictionary.
-    Inputs: idx, ...
-    Outputs: sales = a dictionary where each ticker has a list of lists containing the ID, date, ticker, sale amount, buy price, sale price, gains
+    Inputs: idx, ..., buy_idx = index of the last purchase corresponding to a sale
+    Outputs: sales = a dictionary where each ticker has a list of lists containing the ID, date, ticker, sale amount, buy price, sale price, gains, buy_idx
     """
     if row[5]:
         sell_price = float(row[5])
@@ -601,9 +603,9 @@ def add_sale(is_futures,idx,ticker,price,amount,row,sales):
     # don't declare stuff that is very small
     if abs(amount*(price - sell_price)) > 1e-6:
         if is_futures:
-            sales[ticker].append([idx,row[10],row[0],ticker,-amount,price,sell_price,amount*(price - sell_price)])
+            sales[ticker].append([idx,buy_idx,row[10],row[0],ticker,-amount,price,sell_price,amount*(price - sell_price)])
         else:
-            sales[ticker].append([idx,row[0],ticker,-amount,price,sell_price,amount*(price - sell_price)])
+            sales[ticker].append([idx,buy_idx,row[0],ticker,-amount,price,sell_price,amount*(price - sell_price)])
 
     return sales
 
@@ -822,7 +824,7 @@ def calculate_potential_token_loss(current_price,balance):
 
     return max_loss, max_amount
 
-def update_balances(is_futures,idx,ticker,price,amount,min_prices,balances,buys,row):
+def update_balances(is_futures,idx,ticker,price,amount,min_prices,balances,row):
     """
     Updates the balances, adding to the list for purchases and removing from the list or reducing the amount for sales.  Futures are not added or removed.
     Input: idx = id of the transaction; ticker = ticker of the current token; price = price of the buy or sell, 
@@ -831,19 +833,23 @@ def update_balances(is_futures,idx,ticker,price,amount,min_prices,balances,buys,
      row = a list of the data for the current transaction
     Output: price = if sell, the price at which the token was bought (this can be a mean), if buy, garbage; buys = a dictionary containing a list for each ticker with pairs of transaction id and amount;
      balances = a dictionary for each token of dictionaries (id, date, price, and amount), each containing a list with each transaction; buys = a dictionary containing a list for each ticker with pairs of transaction id and amount;
+     buy_idx = idx of the purchase for this sale.  If multiple purchases, then the last one
     """
     # if positive, add to end of list.
+    buy_idx = idx
     if amount > 0:
         date = row[0]
         balances = increase_balances(ticker,idx,date,price,amount,balances)
+        """
         if ticker not in buys:
             buys[ticker] = []
         buys[ticker].append([idx,amount])
+        """
     
     if amount < 0:
-        price, balances = reduce_balances(is_futures,ticker,amount,min_prices,balances,row)
+        price, buy_idx, balances = reduce_balances(is_futures,ticker,amount,min_prices,balances,row)
 
-    return price, buys, balances
+    return price, buy_idx, balances
 
 def increase_balances(ticker,idx,date,price,amount,balances):
     # add to ticker's dictionary key
@@ -866,11 +872,16 @@ def increase_balances(ticker,idx,date,price,amount,balances):
 def reduce_balances(is_futures,ticker,amount,min_prices,balances,row):
     """
     Reduce the balances for each sale and calculates the purchase price.  Futures are not taken into account
+    Inputs: balances = a dictionary for each token of dictionaries (id, date, price, and amount), each containing a list with each transaction; ; 
+    buy_idx = idx of the purchase for this sale.  If multiple purchases, then the last one
     """
     from datetime import datetime
 
+    # initialize index of purchase to -1 in case no purchase is found.  This allows any repurchase to be considered when applying the 2-month rule
+    buy_idx = -1
+
     if is_futures:
-        return float(row[7]), balances
+        return float(row[7]), buy_idx, balances
 
     # keep looping while there is still amount to be subtracted from first elements and while there are still elements
     sum_price = 0 # this is a sum of the prices times the amounts
@@ -881,13 +892,11 @@ def reduce_balances(is_futures,ticker,amount,min_prices,balances,row):
         print("Must change the amount for this row.",row)
         exit()
 
-    """
     if is_debug:
-        if ticker == 'SOL':
+        if ticker == 'DOT':
             print("\n", ticker)
             print(row)
             print(balances[ticker])
-    """
 
     # if no balance is available for this ticker, set price and return
     if not balances or ticker not in balances or len(balances[ticker]['amounts']) == 0:
@@ -903,7 +912,7 @@ def reduce_balances(is_futures,ticker,amount,min_prices,balances,row):
             print(row)
             print("No balance is available for this row.  We are trying to reduce balance by ",abs(float(row[3])*float(row[5]))," euros",row, "\n")
 
-        return sum_price, balances
+        return sum_price, buy_idx, balances
 
     # error catching for larger sell amounts than currently in balance.  The lowest price is used for the missing amounts
     if abs(amount) > sum(balances[ticker]['amounts']):
@@ -930,17 +939,18 @@ def reduce_balances(is_futures,ticker,amount,min_prices,balances,row):
         # increment balance for missing balances
         idx = balances[ticker]['prices'].index(min_price)
         balances[ticker]['amounts'][idx] = balances[ticker]['amounts'][idx] + abs(amount) - sum(balances[ticker]['amounts'])
+        buy_idx = balances[ticker]['idx'][-1]
 
     # calculate price and update balances
     while remaining_amount < 0 and balances[ticker] and len(balances[ticker]['prices']) > 0:
 
-        """
         if is_debug:
-            if ticker == 'SOL':
+            if ticker == 'DOT':
                 print("balances = ", balances[ticker])
                 print("remaining_amount = ", remaining_amount)
                 print("balances[ticker]['prices'][0] = ", balances[ticker]['prices'][0])
-        """
+
+        buy_idx = balances[ticker]['idx'][0]
 
         # if the specified amount is less than the first element in list
         if abs(remaining_amount) < balances[ticker]['amounts'][0]:
@@ -952,15 +962,14 @@ def reduce_balances(is_futures,ticker,amount,min_prices,balances,row):
             sum_price = sum_price + balances[ticker]['amounts'][0]*balances[ticker]['prices'][0]
             del balances[ticker]['amounts'][0], balances[ticker]['prices'][0], balances[ticker]['dates'][0], balances[ticker]['idx'][0]
 
-    """
     if is_debug:
-        if ticker == 'SOL':
+        if ticker == 'DOT':
             print("\nprice = ",sum_price/-amount)
+            print("buy_idx = ", buy_idx)
             print("balances = ", balances[ticker], "\n")
-    """
 
 
-    return sum_price/-amount, balances
+    return sum_price/-amount, buy_idx, balances
 
 def set_price(is_futures,ticker,amount,min_prices,row):
     # set buy price depending on conditions
@@ -1027,11 +1036,7 @@ if __name__ == '__main__':
 
     create_sales(up_to_data)
     
-    print("HAY QUE PREGUNTARLE A VIRGINIA SI LAS PERDIDAS NO LIQUIDATORIAS DE AÑOS ANTERIORES SE DECLARARON.  SINO, DECLARAR PERDIDAS DE AÑOS ANTERIORES QUE SALEN CON EL PROGRAMA.  SI SÍ, SÓLO DECLARAR PERDIDAS QUE SALIERON EN LO QUE DECLARÓ VIRGINIA")
-    print("HAY QUE PREGUNTARLE A VIRGINIA SI LOS FUTUROS SE DECLARAN A PARTE")
-    print("ME DICE CHATGPT QUE TENGO QUE INTRODUCIR LAS PERDIDAS NO LIQUIDATORIAS EN RENTA WEB.  ES CIERTO?")
     print("https://sede.agenciatributaria.gob.es/Sede/ayuda/manuales-videos-folletos/manuales-ayuda-presentacion/irpf-2019/8-cumplimentacion-irpf/8_2-ganancias-perdidas-patrimoniales/8_2_1-conceptos-generales/8_2_1_1-concepto-ganancias-perdidas-patrimoniales/integracion-diferida-perdidas-patrimoniales-derivadas-transmisiones.html")
-    print("ENCONTRÉ ERRORES EN LA DECLARACIÓN DEL AÑO PASADO.  LOS DEBERÍA CORREGIR?")
 ### This function is not ready.  Something is wrong with the query_coingecko function.  The query returns a ValueError.  Maybe from too many arguments?  Maybe b/c it starts with "-3"?
     # write a file with the maximized potential losses for each token if sold correctly
 #    write_potential_token_losses(balances)

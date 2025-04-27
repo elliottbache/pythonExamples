@@ -1,13 +1,15 @@
 import csv
 from datetime import datetime
+from datetime import date
 from typing import Dict
 from collections import defaultdict
 
 # global variables
 ##################
-is_debug = True
+is_debug = False
 year = 2024
 last_years_declaration = datetime(2023, 4, 29)
+this_years_declaration = datetime.now()
 beginning_of_time_year = 2021
 file_name = str(year) + '/mim - tx.csv'
 file_name_next_year = str(year) + '/mim2025 - tx.csv'
@@ -67,19 +69,16 @@ def create_sales(data):
     from datetime import datetime
 
 #    futures_sales2 = parse_bitget_file2(file_name_bitget)
-    futures_sales2 = read_bitget_csv(file_name_bitget)
-    for key in futures_sales2:
-        futures_sales2[key].reverse()
+    futures_sales = read_bitget_csv(file_name_bitget)
+    for key in futures_sales:
+        futures_sales[key].reverse()
 
-    min_prices, buys, last_years_buys, sales, futures_sales, all_sales, last_years_sales, carry_over, fees, balances, last_years_balances = {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
+    min_prices, buys, last_years_buys, sales, all_sales, last_years_sales, carry_over, fees, balances, last_years_balances = {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
     idx_futures = 0
     for idx, row in enumerate(data):
         
         # define variables for this row
         ticker = row[2].rstrip()
-
-        if ticker == 'HUSKY':
-            print(ticker, row)
 
         # define amount bought or sold.  Positive is purchase
         amount = float(row[3])
@@ -130,12 +129,21 @@ def create_sales(data):
 
         # update balances unless futures (except their fees) 
         if not is_futures:
+
             """
+            # this is where we did not consider sales closing repurchases after year end
             if datetime.strptime(row[0], '%d-%m-%Y') <= last_year_end:
                 buy_price, buy_idx, last_years_balances = update_balances(is_futures,idx,bticker,price,amount,min_prices,last_years_balances,row)
-            """
+
 
             if datetime.strptime(row[0], '%d-%m-%Y') <= end:
+                buy_price, buy_idx, balances = update_balances(is_futures,idx,bticker,price,amount,min_prices,balances,row)
+            """
+            # this is where we consider sales closing repurchases after year end and before declaration date
+            if datetime.strptime(row[0], '%d-%m-%Y') <= last_years_declaration:
+                buy_price, buy_idx, last_years_balances = update_balances(is_futures,idx,bticker,price,amount,min_prices,last_years_balances,row)
+
+            if datetime.strptime(row[0], '%d-%m-%Y') <= this_years_declaration:
                 buy_price, buy_idx, balances = update_balances(is_futures,idx,bticker,price,amount,min_prices,balances,row)
 
         # if we have transferred to someone else, then no need to look at sales
@@ -176,9 +184,6 @@ def create_sales(data):
                     futures_sales = add_sale(is_futures,idx,bticker,price,amount,buy_idx,row,futures_sales)
             """
         
-        if ticker == 'HUSKY' and amount < 0:
-            print(all_sales[ticker])
-
     """
     print(futures_sales, "\n")
     print(futures_sales2)
@@ -188,23 +193,14 @@ def create_sales(data):
     sales, reduced_losses = reduce_losses(year,balances,sales)
 
     # for sales up to last year minus those where the 2-month rule applies
-#    last_years_sales, _ = reduce_losses(year-1,last_years_balances,last_years_sales)
-    last_years_sales, _ = reduce_losses(year-1,balances,last_years_sales)
+    last_years_sales, _ = reduce_losses(year-1,last_years_balances,last_years_sales)
+#    last_years_sales, _ = reduce_losses(year-1,balances,last_years_sales)
 
     # for sales up to this year minus those where the 2-month rule applies
     all_sales, _ = reduce_losses(year,balances,all_sales)
 
-
-    print(all_sales['HUSKY'])
-
     # carry over losses from previous years
     carry_over = carry_over_losses(last_year_end,last_years_sales, all_sales)
-
-
-    print(all_sales['HUSKY'])
-
-    print(carry_over)
-
 
     # remove indices from sales, reduced_losses, and carry_over
     sales_write, futures_sales_write, reduced_losses_write, carry_over_write = {}, {}, {}, {}
@@ -213,10 +209,10 @@ def create_sales(data):
             sales_write[key] = []
         for sale in sales[key]:
             sales_write[key].append(sale[2:])
-    for key in futures_sales2:
+    for key in futures_sales:
         if key not in futures_sales_write:
             futures_sales_write[key] = []
-        for sale in futures_sales2[key]:
+        for sale in futures_sales[key]:
             futures_sales_write[key].append(sale[2:])
     """
     for key in futures_sales:
@@ -347,6 +343,13 @@ def read_bitget_csv(filename):
             open_date = datetime.strptime(row['Opening time'], '%Y-%m-%d %H:%M:%S').strftime('%d-%m-%Y')
             close_date = datetime.strptime(row['Closed time'], '%Y-%m-%d %H:%M:%S').strftime('%d-%m-%Y')
 
+            # check if the future was closed in this fiscal year
+            begin = datetime(year, 1, 1)
+            end = datetime(year, 12, 31)
+            date = datetime.strptime(row['Closed time'], '%Y-%m-%d %H:%M:%S')
+            if date < begin or date > end:
+                continue
+
             # Rates
             open_rate = get_exchange_rate_for_date(open_date, rates)
             close_rate = get_exchange_rate_for_date(close_date, rates)
@@ -476,27 +479,12 @@ def carry_over_losses(last_year_end,last_years_sales, all_sales):
             # add index to dictionary
             last_years_sales_mapping[key][row[0]] = idx
 
-    print('last_years_sales_mapping',last_years_sales_mapping)
-
-
     carry_over = {}
     # loop through all sales key
     for key in all_sales:
-        if key == 'HUSKY':
-            print(key)
-            if key in last_years_sales_mapping:
-                print('last_years_sales_mapping[key]', last_years_sales_mapping[key] )
-            if key in last_years_sales:
-                print('last_years_sales[key]', last_years_sales[key])
 
         # loop through all sales for this key
         for idx, row in enumerate(all_sales[key]):
-            if key == 'HUSKY':
-                print('datetime.strptime(row[2], %d-%m-%Y)', datetime.strptime(row[2], '%d-%m-%Y'))
-                print('last_year_end', last_year_end)
-                print('key', key)
-                print('row[0]', row[0])
-                print('row', row)
             
             # if the sale from previous years is present in the all_sales dictionary but not last_year_sales
             if datetime.strptime(row[2], '%d-%m-%Y') <= last_year_end and (key not in last_years_sales_mapping or row[0] not in last_years_sales_mapping[key] or row not in last_years_sales[key]):
@@ -580,7 +568,7 @@ def reduce_losses(year,balances,sales):
         # initialize index difference between sales and current sale.  We need this since we will be deleting sales while looping through a fixed list of sales
         idx_diff = 0
 
-        # go forward through sales
+        # go forward through sales looking for sales at a loss with repurchase 2 months before or after
         for isale, sale in enumerate(sales_key):
 
             # copy list of current sale
@@ -619,11 +607,9 @@ def reduce_losses(year,balances,sales):
                 # define the date of the current remaining purchase
                 date = datetime.strptime(balances_key_dates[ibalance], '%d-%m-%Y')
 
-                """
-                if is_debug and key == 'DOT':
-                    print("date = ", date)
+                if is_debug and key == 'SPX':
+                    print("SPX date = ", date)
                     print("datetime.strptime(sale[1], '%d-%m-%Y') + relativedelta(months=+2) = ", datetime.strptime(this_sale[2], '%d-%m-%Y') + relativedelta(months=+2))
-                """
 
                 # continue if the current remaining purchase is not before the purchase that led to a negative sale
                 if this_sale[1] >= idx:
@@ -706,6 +692,7 @@ def reduce_losses(year,balances,sales):
                     # remove sales where the 2-month rule applies
                     sales[key][isale-idx_diff][4] = sales[key][isale-idx_diff][4] - balances_key_amounts[ibalance]
                     sales[key][isale-idx_diff][7] = -sales[key][isale-idx_diff][4]*(sales[key][isale-idx_diff][5] - sales[key][isale-idx_diff][6])
+
 
                     # update the undeclared losses to reduced_losses
                     reduced_losses[key][-1][4] += balances_key_amounts[ibalance]
@@ -881,6 +868,7 @@ def add_sale(is_futures,idx,ticker,price,amount,buy_idx,row,sales):
     Inputs: idx, ..., buy_idx = index of the last purchase corresponding to a sale
     Outputs: sales = a dictionary where each ticker has a list of lists containing the ID, date, ticker, sale amount, buy price, sale price, gains, buy_idx
     """
+
     if row[5]:
         sell_price = float(row[5])
     else:

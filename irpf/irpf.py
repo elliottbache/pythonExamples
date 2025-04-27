@@ -1,10 +1,17 @@
+import csv
+from datetime import datetime
+from typing import Dict
+from collections import defaultdict
+
 # global variables
 ##################
-is_debug = False
-year = 2023
+is_debug = True
+year = 2024
+last_years_declaration = datetime(2023, 4, 29)
 beginning_of_time_year = 2021
 file_name = str(year) + '/mim - tx.csv'
 file_name_next_year = str(year) + '/mim2025 - tx.csv'
+file_name_bitget = str(year) + '/bitget.csv'
 #file_name = "C:/Users/ellio/Downloads/mim - tx.csv"
 #file_name = str(year) + '/cryptos.csv'
 is_fifo = True
@@ -59,12 +66,20 @@ def create_sales(data):
 
     from datetime import datetime
 
-    min_prices, buys, last_years_buys, sales, futures_sales, all_sales, last_years_sales, carry_over, fees, balances, last_years_balances = {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
+#    futures_sales2 = parse_bitget_file2(file_name_bitget)
+    futures_sales2 = read_bitget_csv(file_name_bitget)
+    for key in futures_sales2:
+        futures_sales2[key].reverse()
 
+    min_prices, buys, last_years_buys, sales, futures_sales, all_sales, last_years_sales, carry_over, fees, balances, last_years_balances = {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
+    idx_futures = 0
     for idx, row in enumerate(data):
         
         # define variables for this row
         ticker = row[2].rstrip()
+
+        if ticker == 'HUSKY':
+            print(ticker, row)
 
         # define amount bought or sold.  Positive is purchase
         amount = float(row[3])
@@ -78,11 +93,14 @@ def create_sales(data):
         chain = row[9]
         notes = row[11]
         
+        """
         # check if futures
         if 'Futures' in notes:
             is_futures = True
         else:
             is_futures = False
+        """
+        is_futures = False
 
         # set purchase price.  If no purchase price is available, is_price is False
         is_price, price = set_price(is_futures,ticker,amount,min_prices,row)
@@ -149,12 +167,22 @@ def create_sales(data):
                         # add fee to list of fees
                         fees = add_fee(ticker,amount,row,fees)
 
+            """
             # if futures, update sales and fees and continue
             else:
 
                 if datetime.strptime(row[0], '%d-%m-%Y') >= begin:
 
                     futures_sales = add_sale(is_futures,idx,bticker,price,amount,buy_idx,row,futures_sales)
+            """
+        
+        if ticker == 'HUSKY' and amount < 0:
+            print(all_sales[ticker])
+
+    """
+    print(futures_sales, "\n")
+    print(futures_sales2)
+    """
 
     # for current year's sales minus those where the 2-month rule applies
     sales, reduced_losses = reduce_losses(year,balances,sales)
@@ -166,8 +194,17 @@ def create_sales(data):
     # for sales up to this year minus those where the 2-month rule applies
     all_sales, _ = reduce_losses(year,balances,all_sales)
 
+
+    print(all_sales['HUSKY'])
+
     # carry over losses from previous years
     carry_over = carry_over_losses(last_year_end,last_years_sales, all_sales)
+
+
+    print(all_sales['HUSKY'])
+
+    print(carry_over)
+
 
     # remove indices from sales, reduced_losses, and carry_over
     sales_write, futures_sales_write, reduced_losses_write, carry_over_write = {}, {}, {}, {}
@@ -176,11 +213,18 @@ def create_sales(data):
             sales_write[key] = []
         for sale in sales[key]:
             sales_write[key].append(sale[2:])
+    for key in futures_sales2:
+        if key not in futures_sales_write:
+            futures_sales_write[key] = []
+        for sale in futures_sales2[key]:
+            futures_sales_write[key].append(sale[2:])
+    """
     for key in futures_sales:
         if key not in futures_sales_write:
             futures_sales_write[key] = []
         for sale in futures_sales[key]:
             futures_sales_write[key].append(sale[2:])
+    """
     for key in reduced_losses:
         if key not in reduced_losses_write:
             reduced_losses_write[key] = []
@@ -196,6 +240,218 @@ def create_sales(data):
     write_output_file(sales_write,futures_sales_write,fees,reduced_losses_write,carry_over_write)
 
     return 0
+
+def merge_files(existing_data, second_filename):
+    """
+    Takes existing data from Google sheets and adds Bitget futures data to it
+    Inputs: existing_data = data from Google sheets (e.g. 'mim - Tx.csv') in list of lists; second_filename = Bitget futures export
+    Outputs: merged_data = new list of lists with the merged data
+    """
+    import time
+
+    # get exchange rates for dates
+    rates = read_exchange_file(file_name)
+
+    new_data = []
+    # Parse second file
+    with open(second_filename, newline='', encoding='utf-8') as csvfile:
+        reader = csv.DictReader(csvfile)
+        for row in reader:
+            try:
+                closed_time = datetime.strptime(row['Closed time'], '%Y-%m-%d %H:%M:%S')
+                closed_date = closed_time.strftime('%d-%m-%Y')  # same format as first file
+
+                # find dollar to euro rate for this date
+                closed_rate = get_exchange_rate_for_date(closed_date, rates)
+
+                # calculate USDT gains
+                gain = float(row['Realized PnL'].replace('USDT', '').strip())
+
+                # if gains are positive then declare as USDT purchase, otherwise sale
+                new_row = [closed_date]  # start with the date
+                if gain > 0:
+                    new_row += [closed_rate,'USDT',gain,'','',1,closed_rate,'Bitget','','','Futures USDT profit','','','']
+                elif gain < 0:
+                    new_row += [closed_rate,'USDT',gain,1,closed_rate,'?','?','Bitget','','','Futures USDT loss','','','']
+
+                if gain != 0:
+                    new_data.append(new_row)
+
+                # calculate fees
+                fee = float(row['Position Pnl'].replace('USDT', '').strip())- float(row['Realized PnL'].replace('USDT', '').strip())
+
+                # only add negative fees.  Otherwise declare as non-fee
+                new_row = [closed_date]  # start with the date
+                if fee < 0:
+                    new_row += [closed_rate,'feeUSDT',fee,1,closed_rate,'?','?','Bitget','','','Futures fee','','','']
+                elif fee > 0:
+                    new_row += [closed_rate,'USDT',fee,'','',1,closed_rate,'Bitget','','','Futures positive fee (gain)','','','']
+
+                if fee != 0:
+                    new_data.append(new_row)
+
+            except Exception as e:
+                print(f"Skipping row due to error: {e}")
+                continue
+
+    # Add a tag so we know which source the row came from
+    tagged_existing = [(datetime.strptime(row[0], '%d-%m-%Y'), 0, row) for row in existing_data]
+    tagged_new = [(datetime.strptime(row[0], '%d-%m-%Y'), 1, row) for row in new_data]
+    
+    # Merge
+    combined = tagged_existing + tagged_new
+    combined.sort(key=lambda x: (x[0], x[1]))  # sort by date first, then source (existing first)
+
+    # Return only the data (not the date and tag)
+    merged_data = [row for _, _, row in combined]
+    
+    return merged_data
+
+def read_exchange_file(filename: str) -> Dict[datetime, float]:
+    exchange_rates = {}
+    with open(filename, newline='', encoding='utf-8') as csvfile:
+        reader = csv.DictReader(csvfile)
+        for row in reader:
+            try:
+                date = datetime.strptime(row['Date'], '%d-%m-%Y')
+                rate = float(row['USD/EUR'])
+                exchange_rates[date] = rate
+            except (ValueError, KeyError):
+                continue  # skip malformed rows
+    return exchange_rates
+
+def get_exchange_rate_for_date(target_date: str, rates: Dict[datetime, float]) -> float:
+    target = datetime.strptime(target_date, '%d-%m-%Y')
+    closest_date = min(rates.keys(), key=lambda d: abs(d - target))
+    return rates[closest_date]
+
+
+def read_bitget_csv(filename):
+
+    rates = read_exchange_file(file_name)
+
+    result = defaultdict(list)
+
+    with open(filename, newline='', encoding='utf-8') as csvfile:
+        reader = csv.DictReader(csvfile)
+        
+        for row in reader:
+            # Extract ticker and position type
+            futures = row['Futures']
+            if 'USDT' not in futures:
+                continue
+            ticker = futures.split('USDT')[0]
+            is_short = 'short' in futures.lower()
+
+            # Format dates
+            open_date = datetime.strptime(row['Opening time'], '%Y-%m-%d %H:%M:%S').strftime('%d-%m-%Y')
+            close_date = datetime.strptime(row['Closed time'], '%Y-%m-%d %H:%M:%S').strftime('%d-%m-%Y')
+
+            # Rates
+            open_rate = get_exchange_rate_for_date(open_date, rates)
+            close_rate = get_exchange_rate_for_date(close_date, rates)
+
+            # Parse prices
+            entry_price = float(row['Average entry price'])
+            close_price = float(row['Average closing price'])
+
+            buy_price = close_price if is_short else entry_price
+            sale_price = entry_price if is_short else close_price
+
+            # Closed amount without the ticker symbol (e.g., '39SOL' -> '39')
+            closed_amount = ''.join(c for c in row['Closed amount'] if c.isdigit() or c == '.')
+
+            # Parse PnL
+            position_pnl = float(row['Position Pnl'].replace('USDT', '').strip())
+
+            # Construct row
+            entry = [0, 0, open_date, close_date, ticker, float(closed_amount), buy_price*float(open_rate), sale_price*float(close_rate), -float(closed_amount)*(buy_price*float(open_rate)-sale_price*float(close_rate))]
+
+            # Append to ticker group
+            result[ticker].append(entry)
+
+    return dict(result)
+
+def parse_bitget_file2(file_path):
+
+    import csv
+
+    result = {}
+
+    with open(file_path, mode='r', encoding='utf-8') as file:
+        reader = csv.DictReader(file)
+        
+        for row in reader:
+            futures_field = row['Futures']
+            ticker = futures_field.split('USDT')[0]
+            position_type = 'short' if 'Short' in futures_field.lower() else 'long'
+
+            opening_date = row['Opening time']
+            closing_date = row['Closed time']
+            position_pnl = row['Position Pnl'].replace('USDT', '').strip()
+            closed_amount = row['Closed amount'].rstrip(ticker)
+            avg_entry = float(row['Average entry price'])
+            avg_close = float(row['Average closing price'])
+
+            # Determine buy and sale prices based on position type
+            if position_type == 'short':
+                buy_price = avg_close
+                sale_price = avg_entry
+            else:
+                buy_price = avg_entry
+                sale_price = avg_close
+
+            # Build the list entry
+            entry = [
+                0,
+                0,
+                opening_date,
+                closing_date,
+                ticker,
+                float(closed_amount),
+                buy_price,
+                sale_price,
+                float(position_pnl),
+                0
+            ]
+
+            # Append to dictionary
+            if ticker not in result:
+                result[ticker] = []
+            result[ticker].append(entry)
+
+    return result
+
+
+def parse_bitget_file(file_path):
+    import pandas as pd
+    import re
+
+    df = pd.read_csv(file_path)
+    result = {}
+
+    for _, row in df.iterrows():
+        future = row["Futures"]
+        is_short = "Short" in future
+        ticker = future.split("USDT")[0]
+
+        closed_amount = re.findall(r"[\d\.]+", str(row["Closed amount"]))[0]
+        closed_amount = float(closed_amount)
+
+        avg_entry = float(row["Average entry price"])
+        avg_close = float(row["Average closing price"])
+        position_pnl = float(str(row["Position Pnl"]).replace("USDT", "").strip())
+
+        buy_price = avg_close if is_short else avg_entry
+        sale_price = avg_entry if is_short else avg_close
+
+        row_data = [0, 0, ticker, closed_amount, buy_price, sale_price, position_pnl, 0]
+
+        if ticker not in result:
+            result[ticker] = []
+        result[ticker].append(row_data)
+
+    return result
 
 def carry_over_losses(last_year_end,last_years_sales, all_sales):
     """
@@ -220,12 +476,27 @@ def carry_over_losses(last_year_end,last_years_sales, all_sales):
             # add index to dictionary
             last_years_sales_mapping[key][row[0]] = idx
 
+    print('last_years_sales_mapping',last_years_sales_mapping)
+
+
     carry_over = {}
     # loop through all sales key
     for key in all_sales:
+        if key == 'HUSKY':
+            print(key)
+            if key in last_years_sales_mapping:
+                print('last_years_sales_mapping[key]', last_years_sales_mapping[key] )
+            if key in last_years_sales:
+                print('last_years_sales[key]', last_years_sales[key])
 
         # loop through all sales for this key
         for idx, row in enumerate(all_sales[key]):
+            if key == 'HUSKY':
+                print('datetime.strptime(row[2], %d-%m-%Y)', datetime.strptime(row[2], '%d-%m-%Y'))
+                print('last_year_end', last_year_end)
+                print('key', key)
+                print('row[0]', row[0])
+                print('row', row)
             
             # if the sale from previous years is present in the all_sales dictionary but not last_year_sales
             if datetime.strptime(row[2], '%d-%m-%Y') <= last_year_end and (key not in last_years_sales_mapping or row[0] not in last_years_sales_mapping[key] or row not in last_years_sales[key]):
@@ -315,9 +586,11 @@ def reduce_losses(year,balances,sales):
             # copy list of current sale
             this_sale = list(sale)
 
+            """
             if is_debug and key == 'DOT':
                 print("\nsales[key] = ", sales[key])
                 print("this_sale = ", isale, this_sale)
+            """
 
             # only sales up till current year
             if datetime.strptime(this_sale[2], '%d-%m-%Y') > end:
@@ -337,21 +610,27 @@ def reduce_losses(year,balances,sales):
                 # define the index of the current remaining purchase
                 idx = balances_key_idx[ibalance]
 
+                """
                 if is_debug and key == 'DOT':
                     print("idx = ", idx)
                     print("balances_key = ", balances_key)
+                """
 
                 # define the date of the current remaining purchase
                 date = datetime.strptime(balances_key_dates[ibalance], '%d-%m-%Y')
 
+                """
                 if is_debug and key == 'DOT':
                     print("date = ", date)
                     print("datetime.strptime(sale[1], '%d-%m-%Y') + relativedelta(months=+2) = ", datetime.strptime(this_sale[2], '%d-%m-%Y') + relativedelta(months=+2))
+                """
 
                 # continue if the current remaining purchase is not before the purchase that led to a negative sale
                 if this_sale[1] >= idx:
+                    """
                     if is_debug and key == 'DOT':
                         print("this sale is too soon", this_sale[1],  idx)
+                    """
                     ibalance += 1
                     continue 
 
@@ -371,10 +650,12 @@ def reduce_losses(year,balances,sales):
                     ibalance += 1
                     continue
 
+                """
                 if is_debug and key == 'DOT':
                     print("sales[key][idx_sale] = ", sales[key][isale-idx_diff])
                     print("balances_key = ", balances_key)
                     print("balances_key['amounts'][ibalance] = ", balances_key_amounts[ibalance])
+                """
 
 
                 # create list for each sale in loss that is going to be reduced due to a still open purchase within 2 months
@@ -393,21 +674,27 @@ def reduce_losses(year,balances,sales):
                 # sum up current balance
                 sum_balances += balances_key_amounts[ibalance]
 
+                """
                 if is_debug and key == 'DOT':
                     print("sum_balances = ", sum_balances)
+                """
 
                 # update sales & reduced_losses
                 if sum_balances >= this_sale[4]:
 
+                    """
                     if is_debug and key == 'DOT':
                         print("sum_balances >= this_sale[3] ",sum_balances , this_sale[4])
+                    """
 
                     # remove sale
                     del sales[key][isale-idx_diff]
                     idx_diff += 1
 
+                    """
                     if is_debug and key == 'DOT':
                         print("idx_diff = ", idx_diff)
+                    """
 
 
                     # set the undeclared losses to reduced_losses
@@ -424,9 +711,11 @@ def reduce_losses(year,balances,sales):
                     reduced_losses[key][-1][4] += balances_key_amounts[ibalance]
                     reduced_losses[key][-1][7] = -reduced_losses[key][-1][4]*(this_sale[5] - this_sale[6])
 
+                """
                 if is_debug and key == 'DOT':
                     print("reduced_losses[key] = ", reduced_losses[key])
                     print("sales[key][isale-idx_diff] = ", this_sale)
+                """
 
                 if sum_balances > this_sale[4]:
 
@@ -436,9 +725,11 @@ def reduce_losses(year,balances,sales):
                     # cap the sum of the balances at the sale amount
                     sum_balances = this_sale[4]
 
+                    """
                     if is_debug and key == 'DOT':
                         print("balances_key['amounts'][ibalance] = ", balances_key_amounts[ibalance])
                         print("sum_balances = ", sum_balances, "\n")
+                    """
 
 #                        time.sleep(1)
 
@@ -453,9 +744,11 @@ def reduce_losses(year,balances,sales):
                     del balances_key_amounts[ibalance]
                     del balances_key_prices[ibalance]
 
+                """
                 if is_debug and key == 'DOT':
                     print("balances_key['amounts'] = ", balances_key_amounts, "\n")
                     print("sum_balances = ", sum_balances, "\n")
+                """
 
                 """
                 if key == 'TIA':
@@ -463,9 +756,11 @@ def reduce_losses(year,balances,sales):
                 """
 
 #                    time.sleep(1)
+        """
         if is_debug and key == 'DOT':
             print("balances_key = ", balances_key)
             print("sales[key] = ", sales[key], "\n")
+        """
         
     return sales, reduced_losses
 
@@ -892,11 +1187,12 @@ def reduce_balances(is_futures,ticker,amount,min_prices,balances,row):
         print("Must change the amount for this row.",row)
         exit()
 
-    if is_debug:
-        if ticker == 'DOT':
-            print("\n", ticker)
-            print(row)
-            print(balances[ticker])
+    """
+    if is_debug and ticker == 'DOT':
+        print("\n", ticker)
+        print(row)
+        print(balances[ticker])
+    """
 
     # if no balance is available for this ticker, set price and return
     if not balances or ticker not in balances or len(balances[ticker]['amounts']) == 0:
@@ -944,11 +1240,12 @@ def reduce_balances(is_futures,ticker,amount,min_prices,balances,row):
     # calculate price and update balances
     while remaining_amount < 0 and balances[ticker] and len(balances[ticker]['prices']) > 0:
 
-        if is_debug:
-            if ticker == 'DOT':
+        """
+        if is_debug and ticker == 'DOT':
                 print("balances = ", balances[ticker])
                 print("remaining_amount = ", remaining_amount)
                 print("balances[ticker]['prices'][0] = ", balances[ticker]['prices'][0])
+        """
 
         buy_idx = balances[ticker]['idx'][0]
 
@@ -962,11 +1259,12 @@ def reduce_balances(is_futures,ticker,amount,min_prices,balances,row):
             sum_price = sum_price + balances[ticker]['amounts'][0]*balances[ticker]['prices'][0]
             del balances[ticker]['amounts'][0], balances[ticker]['prices'][0], balances[ticker]['dates'][0], balances[ticker]['idx'][0]
 
-    if is_debug:
-        if ticker == 'DOT':
-            print("\nprice = ",sum_price/-amount)
-            print("buy_idx = ", buy_idx)
-            print("balances = ", balances[ticker], "\n")
+    """
+    if is_debug and ticker == 'DOT':
+        print("\nprice = ",sum_price/-amount)
+        print("buy_idx = ", buy_idx)
+        print("balances = ", balances[ticker], "\n")
+    """
 
 
     return sum_price/-amount, buy_idx, balances
@@ -1016,6 +1314,14 @@ def update_min_prices(ticker,price,min_prices):
 
     return min_prices
 
+def write_csv(outfile,a):
+
+    with open(outfile, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerows(a)
+
+    return 0
+
 # main code
 ###########
 if __name__ == '__main__':
@@ -1034,9 +1340,13 @@ if __name__ == '__main__':
 #    up_to_data = remove_end_dates(data)
     up_to_data = list(data)
 
+    write_csv(str(year) + '/noFutures.csv',up_to_data)
+    # merge Bitget futures data with rest of data
+    up_to_data = merge_files(up_to_data, file_name_bitget)
+    write_csv(str(year) + '/futures.csv',up_to_data)
+
     create_sales(up_to_data)
     
-    print("https://sede.agenciatributaria.gob.es/Sede/ayuda/manuales-videos-folletos/manuales-ayuda-presentacion/irpf-2019/8-cumplimentacion-irpf/8_2-ganancias-perdidas-patrimoniales/8_2_1-conceptos-generales/8_2_1_1-concepto-ganancias-perdidas-patrimoniales/integracion-diferida-perdidas-patrimoniales-derivadas-transmisiones.html")
 ### This function is not ready.  Something is wrong with the query_coingecko function.  The query returns a ValueError.  Maybe from too many arguments?  Maybe b/c it starts with "-3"?
     # write a file with the maximized potential losses for each token if sold correctly
 #    write_potential_token_losses(balances)
